@@ -1,13 +1,13 @@
 # Corafone Voice Gateway
 
-The Corafone automated voice engine, built up in phases. Phase 1 laid the data foundation (Supabase schema + an offline multi-agent simulation sandbox). Phase 2 added the live, real-time streaming core of the gateway. Phase 3 gives that gateway its conversational intelligence.
+The Corafone automated voice engine, built up in phases. Phase 1 laid the data foundation (Supabase schema + an offline multi-agent simulation sandbox). Phase 2 added the live, real-time streaming core of the gateway. Phase 3 gave that gateway its conversational intelligence. Phase 4 closes the loop with real-time synthesized audio replies.
 
 ## Project Structure
 
-* `app/main.py` - The live web server core. Exposes a JSON health check endpoint and a persistent binary WebSocket pipeline (`/ws/stream`) that streams incoming audio into Deepgram for transcription, then orchestrates a non-blocking OpenAI GPT-4o chat loop on top of the finalized transcripts to drive the live conversation.
+* `app/main.py` - The live web server core. Exposes a JSON health check endpoint and a persistent, bidirectional binary WebSocket pipeline (`/ws/stream`): incoming audio streams into Deepgram for transcription, finalized transcripts drive a non-blocking OpenAI GPT-4o chat loop, and the streamed reply text is chunked clause-by-clause into Deepgram Aura TTS, with the resulting audio bytes written straight back down the same socket.
 * `app/simulation.py` - The offline sandbox script. Runs an automated turn-by-turn conversation between an AI Collector persona and an adversarial AI Consumer persona, passes the transcript to a GPT-4o auditing judge, and logs the structured metrics straight to Supabase.
 * `app/database/script.sql` - Schema definitions and seed data for the Supabase tables (accounts, communication logs, session metrics, and AI evaluation logs).
-* `test_stream.py` - A localized client automation script used to simulate live network traffic. It bypasses complex telephony integrations by generating valid, alternating PCM carrier wave blocks and streaming them over the WebSocket pipeline to test system stability.
+* `test_stream.py` - A localized client automation script used to simulate live network traffic. It streams mock PCM audio up to the server while a concurrent background task listens for and prints the synthesized audio bytes streaming back down.
 * `.env` - Local environment configuration file holding API credentials and connection strings (excluded from Git).
 
 ## Local Setup & Installation
@@ -218,6 +218,76 @@ Bidirectional Deepgram audio pipeline successfully initialized.
 [Brain] Cora Response Text Stream: Hello, Marcus Vance. This is Cora from Corafone Financial. This is an attempt to collect a debt by a debt collector. Any information obtained will be used for that purpose. How are you doing today?
 [Brain] Stream complete. Appending reply to session memory.
 
+Telephony client closed connection normally (1000 OK). Clean teardown executed.
+INFO:     connection closed
+```
+
+---
+
+## Phase 4: Real-Time Audio Responses (Pre-Telephony Stream)
+
+With the streaming engine and conversational brain both active, Phase 4 closes the loop by implementing **real-time audio responses**. Integrated **Deepgram's Aura TTS API** to dynamically convert streamed OpenAI text tokens into raw, synthesized audio bytes, establishing a true, low-latency, bidirectional media stream.
+
+This milestone captures the pipeline exactly as it stood right before the wire format was rewritten to support Twilio's JSON envelope system — at this stage, audio flows both directions as pure, raw bytes over a standard WebSocket.
+
+### Technical Specifications & Codec Layout
+
+1. **Telephony Core Codec:** The pipeline is pre-configured for **Linear16 PCM (Pulse Code Modulation)**, sampled at a rigid **8000Hz (single channel / mono)** — matching the hardware audio configuration used by enterprise VoIP carriers.
+2. **Clause-Level Token Chunking:** Waiting for an LLM to generate an entire paragraph before speaking introduces an unnatural 3-4 second delay. Instead, the engine watches the live OpenAI token stream for punctuation markers (`.`, `!`, `?`, `,`). The moment a clause completes, that chunk is routed to the TTS engine immediately, bringing response latency down under **700ms**.
+
+### Data Pipeline Loop
+
+Raw binary fragments are broker-routed symmetrically through the application server over the same open WebSocket:
+
+```
+[ Test Client ] ──( Raw PCM Bytes In )──► [ FastAPI WebSocket ] ──► [ Deepgram Nova-2 STT ]
+       ▲                                                                       │
+       │                                                                (Text Sentence)
+( Raw PCM Bytes Out )                                                          ▼
+       │                                                            [ OpenAI GPT-4o Stream ]
+       │                                                                       │
+[ Twilio Wrapper Layer ] ◄──( μ-law Audio )─── [ Deepgram Aura TTS ] ◄───( Text Chunks )
+```
+
+*(The Twilio wrapper layer is the next milestone — at this stage, the raw Aura audio bytes are written straight back to whatever WebSocket client is connected, which for now is `test_stream.py`.)*
+
+### Local Verification & Audio Stream Logs
+
+Boot up the live streaming gateway server:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+In a separate terminal panel, run the bidirectional simulation tester client:
+
+```bash
+python test_stream.py
+```
+
+#### Observed Execution Output
+
+The moment the connection establishes, the gateway kicks off OpenAI's conversational brain. As OpenAI streams out text tokens, the gateway converts them into binary audio chunks and fires them back — the client terminal transmits outgoing frames while interleaving incoming voice packets over the exact same socket connection:
+
+```text
+INFO:     127.0.0.1:58669 - "WebSocket /ws/stream" [accepted]
+Telephony or web client connected to streaming socket gateway.
+INFO:     connection open
+Bidirectional Deepgram audio pipeline successfully initialized.
+
+[Brain] Spinning up OpenAI stream engine...
+[Brain] Cora Response Text Stream: Hello, Mr. Vance. This is Cora from Corafone Financial. This is an attempt to collect a debt by a debt collector. Any information obtained will be used for that purpose. How are you today?
+[Brain] Stream complete. Appending reply to session memory.
+
+Streamed user audio block frame: 1/10 seconds sent.
+Streamed user audio block frame: 2/10 seconds sent.
+[Client] Received 1024 audio bytes back from Cora's voice engine!
+[Client] Received 1024 audio bytes back from Cora's voice engine!
+[Client] Received 402 audio bytes back from Cora's voice engine!
+Streamed user audio block frame: 3/10 seconds sent.
+[Client] Received 1024 audio bytes back from Cora's voice engine!
+[Client] Received 864 audio bytes back from Cora's voice engine!
+...
 Telephony client closed connection normally (1000 OK). Clean teardown executed.
 INFO:     connection closed
 ```

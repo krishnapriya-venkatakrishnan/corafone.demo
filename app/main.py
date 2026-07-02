@@ -1,5 +1,6 @@
 import os
 import asyncio
+import httpx
 from dotenv import load_dotenv
 
 # CRITICAL: Load environment variables BEFORE importing Deepgram
@@ -11,7 +12,7 @@ from deepgram import AsyncDeepgramClient
 from deepgram.core.events import EventType
 from openai import AsyncOpenAI
 
-app = FastAPI(title="Corafone Voice Gateway - Phase 3")
+app = FastAPI(title="Corafone Voice Gateway - Phase 4")
 
 # Initialize Client Gateways
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
@@ -35,11 +36,37 @@ CRITICAL RULES:
 """
 
 
-async def generate_agent_response(conversation_history):
+async def stream_text_to_speech(text_chunk: str, websocket: WebSocket):
     """
-    Asynchronously calls OpenAI to stream the next agent reply
-    based on the updated live transcript history.
+    Takes a text fragment, sends it to Deepgram Aura TTS,
+    and sends the raw audio bytes directly back to the caller.
     """
+    # Deepgram Aura TTS streaming endpoint
+    tts_url = "https://api.deepgram.com/v1/speak?model=aura-asteria-en"
+    headers = {
+        "Authorization": f"Token {DEEPGRAM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    # Requesting linear16 PCM at 8000Hz to perfectly match telephony standards
+    payload = {"text": text_chunk}
+    params = {"encoding": "linear16", "sample_rate": 8000}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            async with client.stream(
+                "POST", tts_url, headers=headers, json=payload, params=params
+            ) as response:
+                if response.status_code == 200:
+                    async for audio_chunk in response.aiter_bytes(chunk_size=1024):
+                        # Stream the raw audio bytes directly down the WebSocket to the caller!
+                        await websocket.send_bytes(audio_chunk)
+                else:
+                    print(f"[TTS] Error from Deepgram Aura: {response.status_code}")
+    except Exception as e:
+        print(f"[TTS] Exception during audio generation: {e}")
+
+
+async def generate_agent_response(conversation_history, websocket: WebSocket):
     print("\n[Brain] Spinning up OpenAI stream engine...")
     try:
         response_stream = await openai_client.chat.completions.create(
@@ -50,6 +77,7 @@ async def generate_agent_response(conversation_history):
         )
 
         full_reply = ""
+        current_sentence = ""
         print("[Brain] Cora Response Text Stream: ", end="", flush=True)
 
         async for chunk in response_stream:
@@ -57,7 +85,17 @@ async def generate_agent_response(conversation_history):
             if text_chunk:
                 print(text_chunk, end="", flush=True)
                 full_reply += text_chunk
-                # Future Phase 4 Milestone: Forward these text tokens directly into a Text-To-Speech engine (ElevenLabs/Deepgram TTS)
+                current_sentence += text_chunk
+
+                # To minimize latency, we don't wait for the full response.
+                # We send chunks to TTS as soon as a clause or sentence completes (, . ! ?)
+                if any(char in text_chunk for char in [".", "!", "?", ","]):
+                    await stream_text_to_speech(current_sentence, websocket)
+                    current_sentence = ""
+
+        # Catch any trailing text
+        if current_sentence.strip():
+            await stream_text_to_speech(current_sentence, websocket)
 
         print("\n[Brain] Stream complete. Appending reply to session memory.\n")
         return full_reply
@@ -71,7 +109,7 @@ async def generate_agent_response(conversation_history):
 async def health_check():
     return JSONResponse(
         status_code=200,
-        content={"status": "healthy", "gateway": "operational", "brain": "online"},
+        content={"status": "healthy", "gateway": "operational", "audio_out": "active"},
     )
 
 
@@ -107,7 +145,9 @@ async def handle_audio_stream(websocket: WebSocket):
 
             async def trigger_llm_reply():
                 # Call our conversational brain
-                agent_reply = await generate_agent_response(conversation_history)
+                agent_reply = await generate_agent_response(
+                    conversation_history, websocket
+                )
                 if agent_reply:
                     # Save what Cora said back into memory so context carries over to the next turn
                     conversation_history.append(
@@ -123,8 +163,7 @@ async def handle_audio_stream(websocket: WebSocket):
 
             print("Bidirectional Deepgram audio pipeline successfully initialized.")
 
-            # Absolute first greeting turn - trigger Cora to open up with the Mini-Miranda disclosure
-            # We seed a brief mock start prompt to give Cora the signal to initiate the call
+            # Trigger Cora's initial Mini-Miranda greeting call introduction
             conversation_history.append(
                 {
                     "role": "user",
