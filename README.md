@@ -1,12 +1,13 @@
 # Corafone Voice Gateway
 
-The Corafone automated voice engine, built up in phases. Phase 1 laid the data foundation (Supabase schema + an offline multi-agent simulation sandbox). Phase 2 added the live, real-time streaming core of the gateway. Phase 3 gave that gateway its conversational intelligence. Phase 4 closes the loop with real-time synthesized audio replies.
+The Corafone automated voice engine, built up in phases. Phase 1 laid the data foundation (Supabase schema + an offline multi-agent simulation sandbox). Phase 2 added the live, real-time streaming core of the gateway. Phase 3 gave that gateway its conversational intelligence. Phase 4 closed the loop with real-time synthesized audio replies. Phase 5 gives the gateway a real, in-browser client to talk to.
 
 ## Project Structure
 
 * `app/main.py` - The live web server core. Exposes a JSON health check endpoint and a persistent, bidirectional binary WebSocket pipeline (`/ws/stream`): incoming audio streams into Deepgram for transcription, finalized transcripts drive a non-blocking OpenAI GPT-4o chat loop, and the streamed reply text is chunked clause-by-clause into Deepgram Aura TTS, with the resulting audio bytes written straight back down the same socket.
 * `app/simulation.py` - The offline sandbox script. Runs an automated turn-by-turn conversation between an AI Collector persona and an adversarial AI Consumer persona, passes the transcript to a GPT-4o auditing judge, and logs the structured metrics straight to Supabase.
 * `app/database/script.sql` - Schema definitions and seed data for the Supabase tables (accounts, communication logs, session metrics, and AI evaluation logs).
+* `index.html` - The Corafone Voice UI. A self-contained browser client (vanilla JS + inline Tailwind CSS) that captures microphone audio, downsamples it to 8000Hz mono PCM16, and streams it to `/ws/stream`, while playing back the agent's synthesized voice gaplessly through the Web Audio API. See [Phase 5: Browser Voice Client](#phase-5-browser-voice-client) below.
 * `test_stream.py` - A localized client automation script used to simulate live network traffic. It streams mock PCM audio up to the server while a concurrent background task listens for and prints the synthesized audio bytes streaming back down.
 * `.env` - Local environment configuration file holding API credentials and connection strings (excluded from Git).
 
@@ -224,11 +225,11 @@ INFO:     connection closed
 
 ---
 
-## Phase 4: Real-Time Audio Responses (Pre-Telephony Stream)
+## Phase 4: Real-Time Audio Responses
 
 With the streaming engine and conversational brain both active, Phase 4 closes the loop by implementing **real-time audio responses**. Integrated **Deepgram's Aura TTS API** to dynamically convert streamed OpenAI text tokens into raw, synthesized audio bytes, establishing a true, low-latency, bidirectional media stream.
 
-This milestone captures the pipeline exactly as it stood right before the wire format was rewritten to support Twilio's JSON envelope system — at this stage, audio flows both directions as pure, raw bytes over a standard WebSocket.
+Audio flows both directions as pure, raw bytes over a standard WebSocket — no additional envelope or wrapper format sits between the client and the gateway.
 
 ### Technical Specifications & Codec Layout
 
@@ -240,16 +241,16 @@ This milestone captures the pipeline exactly as it stood right before the wire f
 Raw binary fragments are broker-routed symmetrically through the application server over the same open WebSocket:
 
 ```
-[ Test Client ] ──( Raw PCM Bytes In )──► [ FastAPI WebSocket ] ──► [ Deepgram Nova-2 STT ]
-       ▲                                                                       │
-       │                                                                (Text Sentence)
-( Raw PCM Bytes Out )                                                          ▼
-       │                                                            [ OpenAI GPT-4o Stream ]
-       │                                                                       │
-[ Twilio Wrapper Layer ] ◄──( μ-law Audio )─── [ Deepgram Aura TTS ] ◄───( Text Chunks )
+[ Browser / Test Client ] ──( Raw PCM Bytes In )──► [ FastAPI WebSocket ] ──► [ Deepgram Nova-2 STT ]
+       ▲                                                                             │
+       │                                                                      (Text Sentence)
+( Raw PCM Bytes Out )                                                                ▼
+       │                                                                  [ OpenAI GPT-4o Stream ]
+       │                                                                             │
+       └────────────────────────( Raw PCM16 Audio )──── [ Deepgram Aura TTS ] ◄───( Text Chunks )
 ```
 
-*(The Twilio wrapper layer is the next milestone — at this stage, the raw Aura audio bytes are written straight back to whatever WebSocket client is connected, which for now is `test_stream.py`.)*
+The raw Aura audio bytes are written straight back down the same socket to whatever client is connected — either `test_stream.py` for automated testing, or the [Phase 5 browser voice client](#phase-5-browser-voice-client) for live, in-browser calls.
 
 ### Local Verification & Audio Stream Logs
 
@@ -291,3 +292,45 @@ Streamed user audio block frame: 3/10 seconds sent.
 Telephony client closed connection normally (1000 OK). Clean teardown executed.
 INFO:     connection closed
 ```
+
+---
+
+## Phase 5: Browser Voice Client
+
+With the audio gateway able to carry raw PCM in both directions, Phase 5 gives it a real client to talk to. [`index.html`](index.html) — the **Corafone Voice UI** — replaces `test_stream.py` as the actual client a person talks to. It's a single, self-contained file (vanilla JS + inline Tailwind CSS, no build step, no framework) that turns a browser tab into a live call with Cora using nothing but the Web Audio API and a raw binary WebSocket.
+
+### UI
+
+A minimalist, dark call screen: a central mic button that toggles connect/disconnect, animated pulsing rings and a breathing glow while the call is live, a status pill that reflects the live call state (`Disconnected` / `Connecting…` / `Listening…` / `Cora Speaking…`), and a running call timer.
+
+### Capturing and Uploading Microphone Audio
+
+1. `navigator.mediaDevices.getUserMedia` captures a mono mic stream (with echo cancellation, noise suppression, and AGC enabled). The `AudioContext` is deliberately constructed only after the user clicks the mic button, respecting the browser's user-gesture requirement for audio.
+2. An `AudioWorkletProcessor` — registered from an inline string via a `Blob` URL, so no second file is needed — runs on the dedicated audio render thread and forwards raw Float32 frames back to the main thread. A `ScriptProcessorNode` fallback covers browsers without `AudioWorklet` support.
+3. On the main thread, each frame is linearly resampled from the browser's native rate (typically 44.1kHz or 48kHz) down to exactly 8000Hz and quantized into an `Int16Array`, matching the gateway's expected wire format.
+4. Converted chunks are batched and flushed to the WebSocket roughly every 200ms as raw `ArrayBuffer`s (`socket.binaryType = 'arraybuffer'`) — no JSON envelope, no framing, just the same raw PCM16 bytes the gateway already expects from `test_stream.py`.
+
+### Receiving and Playing Back Cora's Voice
+
+Incoming binary WebSocket messages are raw PCM16 @ 8000Hz mono, exactly what Deepgram Aura TTS produces on the server side. Each chunk is converted back to Float32 and scheduled on a dedicated 8000Hz `AudioContext` using an ever-advancing playback cursor, so consecutive chunks queue up sample-accurately back-to-back with no clicks, pops, or gaps between them — a normal, continuous voice stream instead of stuttering audio fragments.
+
+### Data Flow
+
+```
+Mic → getUserMedia → AudioWorklet → downsample + Int16 quantize
+   → batched every 200ms → WebSocket.send(ArrayBuffer) ──────▶ FastAPI /ws/stream
+
+FastAPI /ws/stream ──────▶ WebSocket.onmessage(ArrayBuffer)
+   → Int16 → Float32 → AudioBufferSourceNode
+   → gapless scheduling via playback cursor → speakers
+```
+
+### Running It
+
+With the gateway server active (`uvicorn app.main:app --reload`), serve the UI over `http://` rather than opening it as a `file://` URL, since `getUserMedia` requires a proper secure-context origin:
+
+```bash
+python3 -m http.server 8080
+```
+
+Then open `http://127.0.0.1:8080/index.html` in a browser and click the mic button to start a live call.

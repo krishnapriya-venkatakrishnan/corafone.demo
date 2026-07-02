@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Corafone Voice UI</title>
+
+<!-- Tailwind CSS via CDN (JIT build, no build step required) -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<style>
+  /* ---------------------------------------------------------------------
+     A few things Tailwind's utility classes can't express cleanly:
+     the pulsing "breathing" ring animation behind the mic button, and
+     the state-driven color transitions for that ring.
+  --------------------------------------------------------------------- */
+  @keyframes pulse-ring {
+    0%   { transform: scale(0.95); opacity: 0.7; }
+    70%  { transform: scale(1.4);  opacity: 0; }
+    100% { transform: scale(0.95); opacity: 0; }
+  }
+  .pulse-ring {
+    animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  .pulse-ring-fast {
+    animation: pulse-ring 1.1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  /* Subtle breathing glow on the mic button itself while live */
+  @keyframes breathe {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45); }
+    50%      { box-shadow: 0 0 0 18px rgba(16, 185, 129, 0); }
+  }
+  .breathe {
+    animation: breathe 2s ease-in-out infinite;
+  }
+</style>
+</head>
+
+<body class="bg-neutral-950 text-neutral-100 min-h-screen flex items-center justify-center font-sans antialiased overflow-hidden">
+
+  <!-- Ambient background glow -->
+  <div class="pointer-events-none fixed inset-0 flex items-center justify-center">
+    <div class="w-[36rem] h-[36rem] bg-emerald-600/10 rounded-full blur-3xl"></div>
+  </div>
+
+  <main class="relative w-full max-w-sm mx-auto flex flex-col items-center gap-10 px-6 py-12">
+
+    <!-- Brand -->
+    <div class="text-center space-y-1">
+      <h1 class="text-2xl font-semibold tracking-tight text-neutral-50">Corafone</h1>
+      <p class="text-sm text-neutral-500">Voice Agent</p>
+    </div>
+
+    <!-- Status + Timer -->
+    <div class="flex flex-col items-center gap-2">
+      <div id="statusPill" class="flex items-center gap-2 px-4 py-1.5 rounded-full bg-neutral-900 border border-neutral-800 text-sm text-neutral-400 transition-colors duration-300">
+        <span id="statusDot" class="w-2 h-2 rounded-full bg-neutral-600 transition-colors duration-300"></span>
+        <span id="statusText">Disconnected</span>
+      </div>
+      <div id="timer" class="text-3xl font-mono tabular-nums text-neutral-200 tracking-wider">00:00</div>
+    </div>
+
+    <!-- Mic Button -->
+    <div class="relative flex items-center justify-center w-44 h-44">
+      <!-- Animated rings, only shown while connected -->
+      <div id="ring1" class="hidden absolute inset-0 rounded-full bg-emerald-500/30 pulse-ring"></div>
+      <div id="ring2" class="hidden absolute inset-0 rounded-full bg-emerald-500/20 pulse-ring-fast"></div>
+
+      <button
+        id="micButton"
+        type="button"
+        aria-label="Connect call"
+        class="relative z-10 w-28 h-28 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center
+               text-neutral-300 shadow-xl transition-all duration-300 ease-out
+               hover:bg-neutral-700 hover:scale-105 active:scale-95
+               focus:outline-none focus:ring-2 focus:ring-emerald-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <!-- Mic icon (SVG, swaps to a "hang up" icon while connected) -->
+        <svg id="micIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="w-10 h-10">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+          <line x1="12" y1="19" x2="12" y2="23"></line>
+          <line x1="8" y1="23" x2="16" y2="23"></line>
+        </svg>
+      </button>
+    </div>
+
+    <p id="helperText" class="text-xs text-neutral-600 text-center max-w-[220px]">
+      Tap the microphone to start a live call with Cora.
+    </p>
+
+    <!-- Inline error banner (hidden unless something goes wrong) -->
+    <div id="errorBanner" class="hidden w-full text-center text-xs text-red-400 bg-red-950/40 border border-red-900/60 rounded-lg px-3 py-2"></div>
+  </main>
+
+<script>
+/**
+ * ============================================================================
+ * Corafone Voice UI — vanilla JS + Web Audio API frontend
+ *
+ * Responsibilities:
+ *  1. Capture mic audio, downsample it to 8000Hz mono Int16 PCM, and stream
+ *     it up a raw binary WebSocket in small batches.
+ *  2. Receive raw 8000Hz mono Int16 PCM chunks back from the server and play
+ *     them through the speakers gaplessly via a scheduled AudioBufferSource
+ *     queue.
+ *  3. Drive the UI: connect/disconnect button, status pill, call timer.
+ * ============================================================================
+ */
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+const WS_URL = "ws://127.0.0.1:8000/ws/stream";
+const TARGET_SAMPLE_RATE = 8000;       // what the backend expects, in and out
+const UPLOAD_INTERVAL_MS = 200;        // how often we flush mic audio upstream
+const PLAYBACK_SAMPLE_RATE = 8000;     // backend sends PCM16 @ 8kHz mono
+
+// ---------------------------------------------------------------------------
+// DOM references
+// ---------------------------------------------------------------------------
+const micButton = document.getElementById("micButton");
+const micIcon = document.getElementById("micIcon");
+const statusText = document.getElementById("statusText");
+const statusDot = document.getElementById("statusDot");
+const timerEl = document.getElementById("timer");
+const ring1 = document.getElementById("ring1");
+const ring2 = document.getElementById("ring2");
+const helperText = document.getElementById("helperText");
+const errorBanner = document.getElementById("errorBanner");
+
+// ---------------------------------------------------------------------------
+// App state
+// ---------------------------------------------------------------------------
+let ws = null;
+let micStream = null;
+let audioContext = null;        // capture-side context (native sample rate)
+let sourceNode = null;
+let downsampleNode = null;      // AudioWorkletNode or ScriptProcessorNode fallback
+let usingWorklet = false;
+
+let playbackContext = null;     // playback-side context, fixed at 8kHz
+let playbackCursor = 0;         // AudioContext.currentTime cursor for gapless scheduling
+const activePlaybackSources = []; // track scheduled sources so we can stop them on disconnect
+
+let uploadBuffer = [];          // queue of Int16Array chunks waiting to be flushed upstream
+let uploadTimerId = null;
+
+let callState = "disconnected"; // "disconnected" | "connecting" | "listening" | "speaking"
+let timerIntervalId = null;
+let callStartedAt = null;
+
+// ---------------------------------------------------------------------------
+// UI helpers
+// ---------------------------------------------------------------------------
+function setStatus(state) {
+  callState = state;
+
+  const config = {
+    disconnected: { text: "Disconnected",    dot: "bg-neutral-600", pill: "text-neutral-400" },
+    connecting:   { text: "Connecting…",      dot: "bg-amber-400",   pill: "text-amber-300" },
+    listening:    { text: "Listening…",       dot: "bg-emerald-400", pill: "text-emerald-300" },
+    speaking:     { text: "Cora Speaking…",   dot: "bg-sky-400",     pill: "text-sky-300" },
+  }[state];
+
+  statusText.textContent = config.text;
+  statusDot.className = `w-2 h-2 rounded-full transition-colors duration-300 ${config.dot}`;
+  statusText.parentElement.className =
+    `flex items-center gap-2 px-4 py-1.5 rounded-full bg-neutral-900 border border-neutral-800 text-sm transition-colors duration-300 ${config.pill}`;
+
+  const isLive = state !== "disconnected";
+  ring1.classList.toggle("hidden", !isLive);
+  ring2.classList.toggle("hidden", !isLive);
+  micButton.classList.toggle("breathe", state === "listening");
+
+  if (state === "disconnected") {
+    micIcon.innerHTML = MIC_ICON_PATH;
+    micButton.classList.remove("bg-red-950", "border-red-800", "text-red-300");
+    micButton.classList.add("bg-neutral-800", "border-neutral-700", "text-neutral-300");
+    helperText.textContent = "Tap the microphone to start a live call with Cora.";
+  } else {
+    micIcon.innerHTML = HANGUP_ICON_PATH;
+    micButton.classList.remove("bg-neutral-800", "border-neutral-700", "text-neutral-300");
+    micButton.classList.add("bg-red-950", "border-red-800", "text-red-300");
+    helperText.textContent = state === "connecting"
+      ? "Establishing connection…"
+      : "Tap again to end the call.";
+  }
+}
+
+const MIC_ICON_PATH = `
+  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+  <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+  <line x1="12" y1="19" x2="12" y2="23"></line>
+  <line x1="8" y1="23" x2="16" y2="23"></line>
+`;
+const HANGUP_ICON_PATH = `
+  <path d="M22 8.5s-1.5-1-3-1.5"></path>
+  <path d="M2 8.5s5-4 10-4 10 4 10 4"></path>
+  <path d="M6 12.5c1.5-1 4-2 6-2s4.5 1 6 2"></path>
+  <line x1="4" y1="4" x2="20" y2="20"></line>
+`;
+
+function showError(message) {
+  errorBanner.textContent = message;
+  errorBanner.classList.remove("hidden");
+}
+function clearError() {
+  errorBanner.classList.add("hidden");
+  errorBanner.textContent = "";
+}
+
+function startTimer() {
+  callStartedAt = Date.now();
+  timerEl.textContent = "00:00";
+  timerIntervalId = setInterval(() => {
+    const elapsedSec = Math.floor((Date.now() - callStartedAt) / 1000);
+    const mm = String(Math.floor(elapsedSec / 60)).padStart(2, "0");
+    const ss = String(elapsedSec % 60).padStart(2, "0");
+    timerEl.textContent = `${mm}:${ss}`;
+  }, 250);
+}
+function stopTimer() {
+  clearInterval(timerIntervalId);
+  timerIntervalId = null;
+  timerEl.textContent = "00:00";
+}
+
+// ---------------------------------------------------------------------------
+// AudioWorklet processor source, registered via a Blob URL so the whole app
+// stays in a single HTML file (no separate .js worklet file to host).
+//
+// The processor runs on the audio render thread. It just forwards raw
+// Float32 frames (at the AudioContext's native sample rate, e.g. 48kHz) back
+// to the main thread via its port. We do the actual resampling + Int16
+// conversion on the main thread (cheap enough at these chunk sizes, and
+// keeps the realtime audio thread free of allocations/logic).
+// ---------------------------------------------------------------------------
+const WORKLET_SOURCE = `
+class PCMForwarderProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input[0] && input[0].length > 0) {
+      // Copy out of the reused internal buffer before posting.
+      this.port.postMessage(input[0].slice());
+    }
+    return true; // keep the processor alive for the life of the node
+  }
+}
+registerProcessor("pcm-forwarder", PCMForwarderProcessor);
+`;
+
+// ---------------------------------------------------------------------------
+// Downsampling: convert a Float32Array at `inputRate` down to a Int16Array
+// at TARGET_SAMPLE_RATE (8000Hz). Uses simple linear interpolation, which is
+// sufficient quality for narrowband voice telephony use cases like this.
+// ---------------------------------------------------------------------------
+function downsampleFloat32To8kInt16(float32Input, inputSampleRate) {
+  if (inputSampleRate === TARGET_SAMPLE_RATE) {
+    return floatTo16BitPCM(float32Input);
+  }
+
+  const ratio = inputSampleRate / TARGET_SAMPLE_RATE;
+  const outputLength = Math.floor(float32Input.length / ratio);
+  const output = new Float32Array(outputLength);
+
+  for (let i = 0; i < outputLength; i++) {
+    const srcIndex = i * ratio;
+    const srcIndexFloor = Math.floor(srcIndex);
+    const srcIndexCeil = Math.min(srcIndexFloor + 1, float32Input.length - 1);
+    const frac = srcIndex - srcIndexFloor;
+    // Linear interpolation between the two nearest source samples.
+    output[i] = float32Input[srcIndexFloor] * (1 - frac) + float32Input[srcIndexCeil] * frac;
+  }
+
+  return floatTo16BitPCM(output);
+}
+
+function floatTo16BitPCM(float32Array) {
+  const int16Array = new Int16Array(float32Array.length);
+  for (let i = 0; i < float32Array.length; i++) {
+    // Clamp to [-1, 1] then scale to the full Int16 range.
+    const clamped = Math.max(-1, Math.min(1, float32Array[i]));
+    int16Array[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+  }
+  return int16Array;
+}
+
+// ---------------------------------------------------------------------------
+// Mic capture pipeline
+// ---------------------------------------------------------------------------
+async function startMicCapture() {
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  });
+
+  // AudioContext must be created after a user gesture (the connect click).
+  audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  const nativeSampleRate = audioContext.sampleRate; // typically 44100 or 48000
+
+  sourceNode = audioContext.createMediaStreamSource(micStream);
+
+  try {
+    // Preferred path: AudioWorklet (runs off the main thread, no deprecation warnings).
+    const blob = new Blob([WORKLET_SOURCE], { type: "application/javascript" });
+    const workletUrl = URL.createObjectURL(blob);
+    await audioContext.audioWorklet.addModule(workletUrl);
+    URL.revokeObjectURL(workletUrl);
+
+    downsampleNode = new AudioWorkletNode(audioContext, "pcm-forwarder");
+    downsampleNode.port.onmessage = (event) => {
+      const float32Chunk = event.data;
+      const int16Chunk = downsampleFloat32To8kInt16(float32Chunk, nativeSampleRate);
+      queueForUpload(int16Chunk);
+    };
+    usingWorklet = true;
+  } catch (err) {
+    // Fallback: ScriptProcessorNode, for older browsers without AudioWorklet support.
+    console.warn("AudioWorklet unavailable, falling back to ScriptProcessorNode:", err);
+    const bufferSize = 2048;
+    downsampleNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
+    downsampleNode.onaudioprocess = (event) => {
+      const float32Chunk = event.inputBuffer.getChannelData(0);
+      const int16Chunk = downsampleFloat32To8kInt16(float32Chunk, nativeSampleRate);
+      queueForUpload(int16Chunk);
+    };
+    usingWorklet = false;
+  }
+
+  // Wire the graph: mic -> downsample node -> (muted) destination.
+  // We must connect to `destination` or some nodes stop being pulled by the
+  // engine in certain browsers; gain-zero avoids echoing the user's own mic.
+  const silentGain = audioContext.createGain();
+  silentGain.gain.value = 0;
+  sourceNode.connect(downsampleNode);
+  downsampleNode.connect(silentGain);
+  silentGain.connect(audioContext.destination);
+
+  // Flush accumulated audio to the socket on a fixed interval rather than
+  // per-callback, so we send fewer, larger, steadier binary frames.
+  uploadTimerId = setInterval(flushUploadBuffer, UPLOAD_INTERVAL_MS);
+}
+
+function queueForUpload(int16Chunk) {
+  uploadBuffer.push(int16Chunk);
+}
+
+function flushUploadBuffer() {
+  if (uploadBuffer.length === 0) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+  // Concatenate all queued Int16 chunks into one contiguous buffer.
+  const totalLength = uploadBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+  const merged = new Int16Array(totalLength);
+  let offset = 0;
+  for (const chunk of uploadBuffer) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  uploadBuffer = [];
+
+  ws.send(merged.buffer);
+}
+
+function stopMicCapture() {
+  clearInterval(uploadTimerId);
+  uploadTimerId = null;
+  uploadBuffer = [];
+
+  if (downsampleNode) {
+    downsampleNode.disconnect();
+    if (!usingWorklet) downsampleNode.onaudioprocess = null;
+    else downsampleNode.port.onmessage = null;
+    downsampleNode = null;
+  }
+  if (sourceNode) {
+    sourceNode.disconnect();
+    sourceNode = null;
+  }
+  if (micStream) {
+    micStream.getTracks().forEach((track) => track.stop());
+    micStream = null;
+  }
+  if (audioContext) {
+    audioContext.close().catch(() => {});
+    audioContext = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Playback pipeline: incoming raw PCM16 @ 8kHz mono -> gapless scheduled
+// AudioBufferSourceNodes on a dedicated 8kHz AudioContext.
+//
+// Each incoming chunk is scheduled to start exactly when the previous chunk
+// ends (using an ever-advancing `playbackCursor` in AudioContext time),
+// which avoids the clicks/pops you get from starting nodes at `currentTime`
+// with playback-timing jitter.
+// ---------------------------------------------------------------------------
+function ensurePlaybackContext() {
+  if (playbackContext) return;
+  // Request an 8kHz context directly so no resampling is needed on the way out.
+  // Some browsers may silently clamp this to a supported rate; we adapt to
+  // whatever `playbackContext.sampleRate` actually ends up being.
+  playbackContext = new (window.AudioContext || window.webkitAudioContext)({
+    sampleRate: PLAYBACK_SAMPLE_RATE,
+  });
+  playbackCursor = playbackContext.currentTime;
+}
+
+function playIncomingPCMChunk(arrayBuffer) {
+  ensurePlaybackContext();
+
+  const int16Data = new Int16Array(arrayBuffer);
+  if (int16Data.length === 0) return;
+
+  // Convert Int16 PCM -> Float32 in the [-1, 1] range Web Audio expects.
+  const float32Data = new Float32Array(int16Data.length);
+  for (let i = 0; i < int16Data.length; i++) {
+    float32Data[i] = int16Data[i] / (int16Data[i] < 0 ? 0x8000 : 0x7fff);
+  }
+
+  const audioBuffer = playbackContext.createBuffer(1, float32Data.length, playbackContext.sampleRate);
+  audioBuffer.getChannelData(0).set(float32Data);
+
+  const source = playbackContext.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(playbackContext.destination);
+
+  // If we've fallen behind real time (e.g. after a stall), snap the cursor
+  // forward instead of trying to play a long backlog instantly.
+  const now = playbackContext.currentTime;
+  if (playbackCursor < now) {
+    playbackCursor = now;
+  }
+
+  source.start(playbackCursor);
+  playbackCursor += audioBuffer.duration;
+
+  activePlaybackSources.push(source);
+  source.onended = () => {
+    const idx = activePlaybackSources.indexOf(source);
+    if (idx !== -1) activePlaybackSources.splice(idx, 1);
+    // Once nothing is left playing or queued, drop back to "listening".
+    if (activePlaybackSources.length === 0 && callState === "speaking") {
+      setStatus("listening");
+    }
+  };
+
+  if (callState === "listening") {
+    setStatus("speaking");
+  }
+}
+
+function stopPlayback() {
+  activePlaybackSources.forEach((source) => {
+    try { source.onended = null; source.stop(); } catch (_) {}
+  });
+  activePlaybackSources.length = 0;
+
+  if (playbackContext) {
+    playbackContext.close().catch(() => {});
+    playbackContext = null;
+  }
+  playbackCursor = 0;
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket lifecycle
+// ---------------------------------------------------------------------------
+function connectWebSocket() {
+  return new Promise((resolve, reject) => {
+    ws = new WebSocket(WS_URL);
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = () => resolve();
+
+    ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        playIncomingPCMChunk(event.data);
+      }
+      // Non-binary (text/JSON control) messages could be handled here if
+      // the backend ever sends status frames alongside audio.
+    };
+
+    ws.onerror = (event) => {
+      console.error("WebSocket error:", event);
+      reject(new Error("WebSocket connection failed"));
+    };
+
+    ws.onclose = () => {
+      if (callState !== "disconnected") {
+        // Server closed on us mid-call; unwind the UI gracefully.
+        endCall(false);
+      }
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Connect / disconnect orchestration
+// ---------------------------------------------------------------------------
+async function startCall() {
+  clearError();
+  micButton.disabled = true;
+  setStatus("connecting");
+
+  try {
+    await connectWebSocket();
+    await startMicCapture();
+    setStatus("listening");
+    startTimer();
+  } catch (err) {
+    console.error(err);
+    showError(
+      err.name === "NotAllowedError"
+        ? "Microphone access was denied. Please allow mic permissions and try again."
+        : "Couldn't connect to Cora. Is the backend running?"
+    );
+    endCall(true);
+  } finally {
+    micButton.disabled = false;
+  }
+}
+
+function endCall(alreadyCleanedUp) {
+  setStatus("disconnected");
+  stopTimer();
+  stopMicCapture();
+  stopPlayback();
+
+  if (ws) {
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      ws.close();
+    }
+    ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+    ws = null;
+  }
+}
+
+micButton.addEventListener("click", () => {
+  if (callState === "disconnected") {
+    startCall();
+  } else {
+    endCall(false);
+  }
+});
+
+// Clean up if the tab is closed mid-call.
+window.addEventListener("beforeunload", () => {
+  if (callState !== "disconnected") endCall(false);
+});
+
+// Initial UI state.
+setStatus("disconnected");
+</script>
+</body>
+</html>
