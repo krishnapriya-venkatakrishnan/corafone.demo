@@ -63,4 +63,10 @@ async def handle_audio_stream(websocket: WebSocket):
     except WebSocketDisconnect:
         print("Telephony web client disconnected from gateway cleanly.")
     except Exception as e:
-        print(f"Voice gateway exception encountered in processing stream: {e}")
+        # Check if the exception string represents a clean standard websocket closure
+        if "1000 (OK)" in str(e):
+            print(
+                "Telephony client closed connection normally (1000 OK). Clean teardown executed."
+            )
+        else:
+            print(f"Voice gateway exception encountered in processing stream: {e}")

@@ -1,11 +1,13 @@
-# Corafone Voice Gateway - Phase 1
+# Corafone Voice Gateway
 
-This is the foundational layer of the Corafone automated voice engine. Phase 1 focuses on setting up our persistent cloud database layer on Supabase, establishing our target relational schemas, and running an autonomous multi-agent simulation sandbox to test agent negotiations and compliance auditing before wiring up live audio streams.
+The Corafone automated voice engine, built up in phases. Phase 1 laid the data foundation (Supabase schema + an offline multi-agent simulation sandbox). Phase 2 adds the live, real-time core of the gateway.
 
 ## Project Structure
 
-* `app/simulation.py` - The core sandbox script. It runs an automated turn-by-turn conversation between an AI Collector persona and an adversarial AI Consumer persona, passes the transcript to a GPT-4o auditing judge, and logs the structured metrics straight to Supabase.
+* `app/main.py` - The live web server core. Exposes a JSON health check endpoint and a persistent binary WebSocket pipeline (`/ws/stream`) that streams incoming audio data directly into Deepgram's cloud neural networks.
+* `app/simulation.py` - The offline sandbox script. Runs an automated turn-by-turn conversation between an AI Collector persona and an adversarial AI Consumer persona, passes the transcript to a GPT-4o auditing judge, and logs the structured metrics straight to Supabase.
 * `app/database/script.sql` - Schema definitions and seed data for the Supabase tables (accounts, communication logs, session metrics, and AI evaluation logs).
+* `test_stream.py` - A localized client automation script used to simulate live network traffic. It bypasses complex telephony integrations by generating valid, alternating PCM carrier wave blocks and streaming them over the WebSocket pipeline to test system stability.
 * `.env` - Local environment configuration file holding API credentials and connection strings (excluded from Git).
 
 ## Local Setup & Installation
@@ -18,7 +20,7 @@ python3 -m venv venv
 source venv/bin/activate
 
 # Install the required packages
-pip install fastapi uvicorn websockets asyncpg openai pydantic python-dotenv
+pip install fastapi uvicorn websockets asyncpg openai pydantic python-dotenv deepgram-sdk
 ```
 
 Configure your `.env` file in the root directory:
@@ -26,11 +28,18 @@ Configure your `.env` file in the root directory:
 ```text
 OPENAI_API_KEY=your_openai_api_key_here
 DATABASE_URL=your_supabase_session_pooler_connection_string
+DEEPGRAM_API_KEY=your_real_deepgram_key_here
 ```
 
 Note: Make sure to use the Supabase Connection Pooler URI string (port 6543) to bypass local DNS resolution bottlenecks.
 
-## Database Initialization
+---
+
+## Phase 1: Data Engine & Simulation Sandbox
+
+Phase 1 focuses on setting up our persistent cloud database layer on Supabase, establishing our target relational schemas, and running an autonomous multi-agent simulation sandbox to test agent negotiations and compliance auditing before wiring up live audio streams.
+
+### Database Initialization
 
 Run the contents of [`app/database/script.sql`](app/database/script.sql) inside your Supabase SQL Editor to spin up the target tables and seed the initial mock account.
 
@@ -82,7 +91,7 @@ VALUES ('John', '+15550199', 500.00, 'ACTIVE')
 ON CONFLICT (phone_number) DO NOTHING;
 ```
 
-## Running the Multi-Agent Sandbox
+### Running the Multi-Agent Sandbox
 
 The simulation script uses two specialized LLM instances to simulate an outbound collection call.
 
@@ -98,3 +107,53 @@ python app/simulation.py
 ```
 
 The console will stream the live negotiation followed by confirmation of the session and evaluation records being committed to the database.
+
+---
+
+## Phase 2: Real-Time Streaming Gateway
+
+Now that the database foundation is locked down, Phase 2 focuses on building the real-time core of the gateway. Transitioned from static text simulations to a live streaming server using **FastAPI WebSockets** and integrated **Deepgram's Asynchronous Streaming SDK** to handle ultra-low-latency real-time voice transcription.
+
+### Booting the Gateway Server
+
+To boot up the live gateway backend, execute the following command:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+#### Verifying Gateway Health
+
+Open a separate terminal window and verify the HTTP service layer responds with a clean `200 OK` status code:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+**Expected Response:**
+
+```json
+{"status":"healthy","gateway":"operational"}
+```
+
+### Simulating Real-Time Binary Media Streams
+
+While keeping the Uvicorn server active in terminal one, spin up the client automation test script in a separate terminal:
+
+```bash
+python test_stream.py
+```
+
+#### Observed Execution Lifecycle
+
+The server smoothly captures the client attachment, opens up a secure connection upstream to Deepgram, transfers the media data block-by-block, and signs off with a standard closure sequence:
+
+```text
+INFO:     127.0.0.1:58669 - "WebSocket /ws/stream" [accepted]
+Telephony or web client connected to streaming socket gateway.
+INFO:     connection open
+Bidirectional Deepgram audio pipeline successfully initialized.
+...
+Telephony client closed connection normally (1000 OK). Clean teardown executed.
+INFO:     connection closed
+```
