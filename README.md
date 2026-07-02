@@ -1,10 +1,10 @@
 # Corafone Voice Gateway
 
-The Corafone automated voice engine, built up in phases. Phase 1 laid the data foundation (Supabase schema + an offline multi-agent simulation sandbox). Phase 2 adds the live, real-time core of the gateway.
+The Corafone automated voice engine, built up in phases. Phase 1 laid the data foundation (Supabase schema + an offline multi-agent simulation sandbox). Phase 2 added the live, real-time streaming core of the gateway. Phase 3 gives that gateway its conversational intelligence.
 
 ## Project Structure
 
-* `app/main.py` - The live web server core. Exposes a JSON health check endpoint and a persistent binary WebSocket pipeline (`/ws/stream`) that streams incoming audio data directly into Deepgram's cloud neural networks.
+* `app/main.py` - The live web server core. Exposes a JSON health check endpoint and a persistent binary WebSocket pipeline (`/ws/stream`) that streams incoming audio into Deepgram for transcription, then orchestrates a non-blocking OpenAI GPT-4o chat loop on top of the finalized transcripts to drive the live conversation.
 * `app/simulation.py` - The offline sandbox script. Runs an automated turn-by-turn conversation between an AI Collector persona and an adversarial AI Consumer persona, passes the transcript to a GPT-4o auditing judge, and logs the structured metrics straight to Supabase.
 * `app/database/script.sql` - Schema definitions and seed data for the Supabase tables (accounts, communication logs, session metrics, and AI evaluation logs).
 * `test_stream.py` - A localized client automation script used to simulate live network traffic. It bypasses complex telephony integrations by generating valid, alternating PCM carrier wave blocks and streaming them over the WebSocket pipeline to test system stability.
@@ -154,6 +154,70 @@ Telephony or web client connected to streaming socket gateway.
 INFO:     connection open
 Bidirectional Deepgram audio pipeline successfully initialized.
 ...
+Voice gateway exception encountered in processing stream: received 1000 (OK); then sent 1000 (OK)
+INFO:     connection closed
+```
+
+---
+
+## Phase 3: Conversational Brain
+
+With the real-time audio extraction pipeline finalized, Phase 3 gives the gateway its conversational intelligence. We integrated an asynchronous **OpenAI GPT-4o Streaming Loop** straight into the non-blocking network socket broker, allowing the AI agent to dynamically process real-time transcripts and generate contextual replies on the fly.
+
+### Conversational Architecture & Guardrails
+
+The conversational layer acts under strict corporate compliance rules and behavioral boundaries defined directly inside the system prompt:
+
+1. **Mandatory Compliance Turn:** The moment the connection frame initializes, a system-level hook triggers the engine to compose its opening statement. The agent is strictly locked into stating the legal **Mini-Miranda disclosure** on turn one before any customer conversation can proceed.
+2. **Financial Boundaries:** The agent operates with awareness of the customer record (`Marcus Vance`, owing `$500.00`) and holds a firm logic gate preventing negotiation discounts from exceeding 40% (restricting settlements to a `$300.00` minimum).
+3. **Conversational Optimization:** Text token outputs are tightly throttled to a 2-3 sentence maximum to maintain natural, fast verbal dialogue cadences over a live phone connection.
+
+### Live Event Flow
+
+The system runs completely asynchronously using Python's event loop to prevent network packet starvation:
+
+```
+[ Telephony Client ] ---> (Stream Audio Bytes) ---> [ FastAPI WebSockets ]
+                                                             |
+                                                   (Forward Raw Media)
+                                                             v
+[ OpenAI Chat Stream ] <--- (Trigger Async Task) <--- [ Deepgram STT Node ]
+```
+
+1. Raw media packets stream from the client into the FastAPI WebSocket endpoint.
+2. The server pipes those bytes directly to Deepgram over a context-managed WebSocket.
+3. The moment Deepgram finalizes an entire sentence chunk, it fires an `EventType.MESSAGE` hook.
+4. The server appends that incoming text to session memory and spawns a non-blocking `asyncio.create_task()` worker to talk to OpenAI.
+5. OpenAI immediately begins streaming text tokens back to the server console, keeping response latency below standard conversational thresholds.
+
+### Local Verification & Output Logs
+
+Boot up the live streaming gateway server:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+In a separate terminal panel, execute the local test streaming client:
+
+```bash
+python test_stream.py
+```
+
+#### Observed Console Output
+
+As soon as the client links to the gateway, the conversational engine instantly fires up and outputs its compliant first-turn greeting token-by-token:
+
+```text
+INFO:     127.0.0.1:58873 - "WebSocket /ws/stream" [accepted]
+Telephony or web client connected to streaming socket gateway.
+INFO:     connection open
+Bidirectional Deepgram audio pipeline successfully initialized.
+
+[Brain] Spinning up OpenAI stream engine...
+[Brain] Cora Response Text Stream: Hello, Marcus Vance. This is Cora from Corafone Financial. This is an attempt to collect a debt by a debt collector. Any information obtained will be used for that purpose. How are you doing today?
+[Brain] Stream complete. Appending reply to session memory.
+
 Telephony client closed connection normally (1000 OK). Clean teardown executed.
 INFO:     connection closed
 ```
