@@ -2,6 +2,7 @@
 collections agent's business rules, prompt, and tool schemas."""
 
 import os
+from datetime import date
 
 from dotenv import load_dotenv
 
@@ -10,10 +11,16 @@ load_dotenv()
 # --- API credentials ---
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL")  # Supabase session pooler URI
+SUPABASE_URL = os.getenv("SUPABASE_URL")  # Supabase project base URL (Storage REST API)
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # Storage uploads (app/storage.py)
 
 _REQUIRED_ENV_VARS = {
     "DEEPGRAM_API_KEY": DEEPGRAM_API_KEY,
     "OPENAI_API_KEY": OPENAI_API_KEY,
+    "DATABASE_URL": DATABASE_URL,
+    "SUPABASE_URL": SUPABASE_URL,
+    "SUPABASE_SERVICE_ROLE_KEY": SUPABASE_SERVICE_ROLE_KEY,
 }
 _missing_env_vars = [name for name, value in _REQUIRED_ENV_VARS.items() if not value]
 if _missing_env_vars:
@@ -45,7 +52,7 @@ MOCK_SCHEDULING_LATENCY_SECONDS = 0.3  # callback scheduling
 
 # --- Collections agent business rules ---
 CUSTOMER_NAME = "Marcus Vance"
-CUSTOMER_ACCOUNT_ID = "acct_marcus_vance_001"
+CUSTOMER_PHONE_NUMBER = "+15550199"  # looked up in Supabase at call start (app/db.py)
 ACCOUNT_BALANCE = 500.00
 MAX_SETTLEMENT_DISCOUNT_PERCENT = 40
 MINIMUM_SETTLEMENT_AMOUNT = round(
@@ -64,8 +71,13 @@ MINI_MIRANDA_DISCLOSURE = (
 # only -- no debt disclosure until confirmed speaking with the right person.
 GREETING_IDENTITY_CHECK = f"Hello, this is Cora calling from Corafone Financial. May I please speak with {CUSTOMER_NAME}?"
 
-SYSTEM_PROMPT = f"""You are Cora, an automated outbound voice collection agent for Corafone Financial.
+def build_system_prompt() -> str:
+    """Rebuilt per call (not a static module-level string) so `today` never
+    goes stale on a long-running server."""
+    today = date.today().isoformat()
+    return f"""You are Cora, an automated outbound voice collection agent for Corafone Financial.
 Your tone must remain highly professional, warm, and genuinely empathetic -- never pushy or forceful.
+Today's date is {today}.
 
 CRITICAL RULES:
 1. IDENTITY VERIFICATION (must happen before any debt disclosure): your opening
@@ -102,12 +114,17 @@ CRITICAL RULES:
    payments of $X each, starting [date] -- does that work for you?" (using the
    actual agreed numbers and date, not literally N and X), or "So I'll call you
    back tomorrow at 6 PM -- does that work?" Only call the matching tool after
-   the customer clearly says yes to those exact terms. For a payment plan, the
-   agreed start date must be included in that confirmation and passed to
-   `offer_payment_plan`.
+   the customer clearly says yes to those exact terms. For a payment plan, use
+   today's date above to resolve whatever the customer said (e.g. "next Friday")
+   into an absolute calendar date, confirm that resolved date in the yes/no
+   question, and pass that same absolute date to `offer_payment_plan`. Likewise,
+   for a callback, resolve the customer's requested day/time (e.g. "tomorrow at
+   6 PM") into an absolute date and time using today's date above, and pass that
+   same absolute date-time to `schedule_callback`.
 5. AFTER `offer_payment_plan` succeeds, your next turn MUST state when the
-   payment schedule starts (e.g. "Great, your first payment of $X is due
-   [date]."), not just confirm the plan was created.
+   payment schedule starts, spoken naturally (e.g. "Great, your first payment
+   of $X is due July 10th."), never as a raw ISO date -- not just confirm the
+   plan was created.
 6. NEVER pressure the customer to decide today, and never imply the settlement
    discount expires or is only available right now -- it remains available
    whenever they're ready, including at a rescheduled callback. If the customer
@@ -133,16 +150,12 @@ SETTLEMENT_FUNCTION_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "account_id": {
-                "type": "string",
-                "description": "The unique system identifier for the user account.",
-            },
             "amount": {
                 "type": "number",
                 "description": f"The exact settlement dollar total agreed upon (minimum {MINIMUM_SETTLEMENT_AMOUNT:.2f}).",
             },
         },
-        "required": ["account_id", "amount"],
+        "required": ["amount"],
     },
 }
 
@@ -152,12 +165,13 @@ SCHEDULE_CALLBACK_FUNCTION_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "requested_datetime_description": {
+            "callback_datetime": {
                 "type": "string",
-                "description": "The customer's requested callback time in their own words, e.g. 'tomorrow at 6 PM' or 'next Monday morning'.",
+                "format": "date-time",
+                "description": "The absolute date and time of the callback, as YYYY-MM-DDTHH:MM:SS (24-hour), resolved from today's date and the customer's own words (e.g. 'tomorrow at 6 PM').",
             },
         },
-        "required": ["requested_datetime_description"],
+        "required": ["callback_datetime"],
     },
 }
 
@@ -167,10 +181,6 @@ OFFER_PAYMENT_PLAN_FUNCTION_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "account_id": {
-                "type": "string",
-                "description": "The unique system identifier for the user account.",
-            },
             "num_installments": {
                 "type": "integer",
                 "description": f"Number of monthly installments ({MIN_INSTALLMENTS}-{MAX_INSTALLMENTS}).",
@@ -179,11 +189,12 @@ OFFER_PAYMENT_PLAN_FUNCTION_SCHEMA = {
                 "type": "number",
                 "description": "Dollar amount per installment, agreed with the customer.",
             },
-            "start_date_description": {
+            "start_date": {
                 "type": "string",
-                "description": "When the first installment is due, in the customer's own words, e.g. 'starting next Friday' or 'beginning the 1st of next month'.",
+                "format": "date",
+                "description": "The absolute date of the first installment, as YYYY-MM-DD, resolved from today's date and the customer's own words (e.g. 'next Friday').",
             },
         },
-        "required": ["account_id", "num_installments", "amount_per_installment", "start_date_description"],
+        "required": ["num_installments", "amount_per_installment", "start_date"],
     },
 }

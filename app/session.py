@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from fastapi import WebSocket
@@ -14,6 +15,10 @@ class CallSession:
 
     websocket: WebSocket
 
+    # Resolved once at call start (app/db.py), the real Supabase account this
+    # call is for -- never taken from the LLM (see app/tools.py for why).
+    account_id: int | None = None
+
     # Settlement idempotency guard (only charge once per call).
     settlement_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     settlement_settled: bool = False
@@ -24,7 +29,7 @@ class CallSession:
     callback_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     callback_scheduled: bool = False
     callback_id: str | None = None
-    callback_requested_time: str | None = None
+    callback_time: str | None = None
 
     # Payment-plan idempotency guard.
     payment_plan_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -38,3 +43,13 @@ class CallSession:
     agent_context: Any = None
     agent_connection: Any = None
     agent_listen_task: asyncio.Task | None = None
+
+    # Curated per-call transcript, uploaded to Supabase Storage on teardown
+    # (see app/voice_agent.py's teardown_session and append_call_log below).
+    call_started_at: datetime = field(default_factory=datetime.now)
+    log_lines: list[str] = field(default_factory=list)
+
+
+def append_call_log(session: "CallSession", tag: str, message: str) -> None:
+    """Appends one curated, human-readable line to this call's transcript."""
+    session.log_lines.append(f"{datetime.now():%Y-%m-%d %H:%M:%S} [{tag}] {message}")

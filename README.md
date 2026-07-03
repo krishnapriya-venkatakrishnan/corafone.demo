@@ -21,7 +21,7 @@ python3 -m venv venv
 source venv/bin/activate
 
 # Install the required packages
-pip install fastapi uvicorn websockets asyncpg openai pydantic python-dotenv deepgram-sdk
+pip install fastapi uvicorn websockets asyncpg httpx openai pydantic python-dotenv deepgram-sdk
 ```
 
 Configure your `.env` file in the root directory:
@@ -30,9 +30,11 @@ Configure your `.env` file in the root directory:
 OPENAI_API_KEY=your_openai_api_key_here
 DATABASE_URL=your_supabase_session_pooler_connection_string
 DEEPGRAM_API_KEY=your_real_deepgram_key_here
+SUPABASE_URL=your_supabase_project_base_url
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 ```
 
-Note: Make sure to use the Supabase Connection Pooler URI string (port 6543) to bypass local DNS resolution bottlenecks.
+Note: Make sure to use the Supabase Connection Pooler URI string (port 6543) to bypass local DNS resolution bottlenecks. `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` are used for Storage uploads (see [Phase 7](#phase-7-real-supabase-integration)) -- the service-role key is from Project Settings > API and must stay server-side only.
 
 ---
 
@@ -409,3 +411,75 @@ If Deepgram finalizes the same spoken agreement as more than one transcript, the
 [STT Voice Capture] Deepgram finalized: 'Go ahead and charge it.'
 [DB Ledger Tool] Settlement already processed this call — skipping duplicate charge.
 ```
+
+---
+
+## Phase 7: Real Supabase Integration
+
+Phase 6's three tools (settlement, callback scheduling, payment plans) were mocks — they slept, fabricated an id, and persisted nothing. Phase 7 wires them to the Supabase database Phase 1 stood up: `app/db.py` owns a single `asyncpg` connection pool for the process lifetime (opened/closed via FastAPI's `lifespan`), and each tool in `app/tools.py` now reads/writes real rows instead of sleeping.
+
+**Before running live calls after pulling this change**, run these migrations in the Supabase SQL Editor, in order, once each (after `script.sql`).
+
+**1. [`migration_002_agent_tools.sql`](app/database/migration_002_agent_tools.sql)** -- adds the `payment_plans` and `scheduled_callbacks` tables, widens `accounts.status` to allow `PAYMENT_PLAN_ACTIVE`, and repoints the Phase 1 seed row's name from `'John'` to `'Marcus Vance'` so it matches the persona `app/config.py` actually uses:
+
+```sql
+-- 1. Payment plans now a valid disposition, not just SETTLED.
+ALTER TABLE accounts DROP CONSTRAINT IF EXISTS accounts_status_check;
+ALTER TABLE accounts ADD CONSTRAINT accounts_status_check
+    CHECK (status IN ('ACTIVE', 'SETTLED', 'DO_NOT_CALL', 'DISPUTE', 'PAYMENT_PLAN_ACTIVE'));
+
+-- 2. Installment plans booked by create_installment_payment_plan().
+CREATE TABLE IF NOT EXISTS payment_plans (
+    plan_id SERIAL PRIMARY KEY,
+    account_id INT REFERENCES accounts(account_id) ON DELETE CASCADE,
+    num_installments INT NOT NULL,
+    amount_per_installment NUMERIC(10, 2) NOT NULL,
+    total_amount NUMERIC(10, 2) NOT NULL,
+    start_date_description TEXT NOT NULL,
+    status VARCHAR(20) DEFAULT 'ACTIVE',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 3. Follow-up calls booked by schedule_followup_callback().
+CREATE TABLE IF NOT EXISTS scheduled_callbacks (
+    callback_id SERIAL PRIMARY KEY,
+    account_id INT REFERENCES accounts(account_id) ON DELETE CASCADE,
+    requested_time_description TEXT NOT NULL,
+    status VARCHAR(20) DEFAULT 'PENDING',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 4. Phase 1 seeded this demo account as 'John'; the live agent's persona
+-- (app/config.py) is 'Marcus Vance' -- repoint the same row rather than
+-- seeding a second account.
+UPDATE accounts SET customer_name = 'Marcus Vance' WHERE phone_number = '+15550199';
+```
+
+**2. [`migration_003_payment_plan_date.sql`](app/database/migration_003_payment_plan_date.sql)** -- replaces `payment_plans.start_date_description` (free text) with a real `start_date DATE` column, now that Cora is told today's date in her system prompt (rebuilt fresh per call via `config.build_system_prompt()`) and resolves phrases like "next Friday" into an absolute date herself before calling `offer_payment_plan`:
+
+```sql
+-- Assumes payment_plans has no rows yet (true unless a live payment-plan
+-- call has already succeeded) -- ADD COLUMN ... NOT NULL fails otherwise;
+-- TRUNCATE TABLE payment_plans first if it does.
+ALTER TABLE payment_plans DROP COLUMN start_date_description;
+ALTER TABLE payment_plans ADD COLUMN start_date DATE NOT NULL;
+```
+
+**3. [`migration_004_callback_datetime.sql`](app/database/migration_004_callback_datetime.sql)** -- same idea for callbacks: replaces `scheduled_callbacks.requested_time_description` (free text) with a real `callback_time TIMESTAMP` column, since Cora now resolves phrases like "tomorrow at 6 PM" into an absolute date-time before calling `schedule_callback`:
+
+```sql
+-- Assumes scheduled_callbacks has no rows yet -- ADD COLUMN ... NOT NULL
+-- fails otherwise; TRUNCATE TABLE scheduled_callbacks first if it does.
+ALTER TABLE scheduled_callbacks DROP COLUMN requested_time_description;
+ALTER TABLE scheduled_callbacks ADD COLUMN callback_time TIMESTAMP NOT NULL;
+```
+
+Account identity is resolved once per call, server-side (`db.get_account_id_by_phone`, looked up by `config.CUSTOMER_PHONE_NUMBER` and stored on `CallSession.account_id`) rather than asked of the LLM — a phone call gives the model no reliable way to know its own database id, so the settlement/payment-plan tool schemas no longer even have an `account_id` parameter. Each tool call also writes a one-line disposition to `communication_logs` (e.g. "Settlement processed: tx_corafone_..., $300.00 charged.") so every real-world action taken on a call leaves an audit trail. If a DB write fails, `handle_function_call_request` now catches it and reports a spoken-friendly error back to the agent instead of the call silently hanging.
+
+### Per-call transcript in Supabase Storage
+
+`communication_logs` rows are great for structured, one-per-action records, but not for reading back a whole conversation. Instead, `app/session.py`'s `CallSession` accumulates a curated transcript (`log_lines`) as the call happens — conversation turns, barge-ins, and tool/billing actions, appended via `append_call_log` from `app/voice_agent.py` and `app/tools.py` — skipping routine internal events (`AgentAudioDone`, generic `History`, etc.). On teardown, `app/voice_agent.py`'s `teardown_session` uploads that transcript as a single text file to Supabase Storage via `app/storage.py`, at `communications/{account_id}/{call_datetime}/log.txt`.
+
+**Manual setup required** (once, like the SQL migrations):
+1. In the Supabase dashboard, create a **private** Storage bucket named `communications`.
+2. Add `SUPABASE_URL` (project base URL) and `SUPABASE_SERVICE_ROLE_KEY` (Project Settings > API — service-role secret, backend-only, never exposed to the browser) to `.env`.

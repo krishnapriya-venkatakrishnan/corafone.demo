@@ -1,7 +1,8 @@
 """Deepgram Voice Agent protocol relay: opens the managed STT+LLM+TTS
 session, relays audio and control packets to/from the browser, and
-dispatches function calls to app/tools.py. Deepgram owns turn-taking,
-barge-in, and conversation history; this module does not."""
+dispatches function calls to app/tools.py. Deepgram owns turn-taking and
+barge-in; this module does not. Also curates a per-call transcript and
+uploads it to Supabase Storage on teardown -- see app/storage.py."""
 
 import asyncio
 import json
@@ -20,8 +21,8 @@ from deepgram.agent.v1.types import (
     AgentV1SettingsAudioOutput,
 )
 
-from . import config
-from .session import CallSession
+from . import config, storage
+from .session import CallSession, append_call_log
 from .tools import handle_function_call_request
 
 logger = logging.getLogger("corafone")
@@ -51,6 +52,7 @@ def on_agent_message(message: Any, session: CallSession) -> None:
     if message_type == "UserStartedSpeaking":
         # Flux already confirmed this is real speech -- stop playback now.
         logger.info("[Barge-in] Customer started speaking -- clearing playback.")
+        append_call_log(session, "Barge-in", "Customer started speaking -- clearing playback.")
         asyncio.create_task(send_control_packet(session, "clear_audio_buffer"))
         return
 
@@ -60,15 +62,18 @@ def on_agent_message(message: Any, session: CallSession) -> None:
 
     if message_type == "ConversationText":
         logger.info("[%s]: %s", message.role, message.content)
+        append_call_log(session, message.role, message.content)
         return
 
     if message_type in ("Error", "Warning"):
+        description = getattr(message, "description", message)
         log_fn = logger.error if message_type == "Error" else logger.warning
-        log_fn("Deepgram Voice Agent %s: %s", message_type, getattr(message, "description", message))
+        log_fn("Deepgram Voice Agent %s: %s", message_type, description)
+        append_call_log(session, message_type, str(description))
         return
 
     # Welcome, SettingsApplied, AgentStartedSpeaking, AgentThinking,
-    # AgentAudioDone, etc. -- informational only.
+    # AgentAudioDone, etc. -- console-only, not curated into the transcript.
     logger.info("Voice Agent event: %s", message_type)
 
 
@@ -112,7 +117,7 @@ async def initialize_agent_connection(session: CallSession) -> None:
                 ),
                 think=ThinkSettingsV1(
                     provider={"type": "open_ai", "model": config.OPENAI_MODEL},
-                    prompt=config.SYSTEM_PROMPT,
+                    prompt=config.build_system_prompt(),
                     functions=[
                         config.SETTLEMENT_FUNCTION_SCHEMA,
                         config.SCHEDULE_CALLBACK_FUNCTION_SCHEMA,
@@ -131,9 +136,18 @@ async def initialize_agent_connection(session: CallSession) -> None:
 
 
 async def teardown_session(session: CallSession) -> None:
-    """Releases Deepgram resources when the call ends, however it ends."""
+    """Releases Deepgram resources when the call ends, however it ends, and
+    uploads the curated transcript to Supabase Storage."""
     if session.agent_listen_task is not None:
         session.agent_listen_task.cancel()
     if session.agent_context is not None:
         logger.info("Shutting down active Deepgram Voice Agent session.")
         await session.agent_context.__aexit__(None, None, None)
+
+    if session.account_id is not None and session.log_lines:
+        path = f"{session.account_id}/{session.call_started_at:%Y%m%dT%H%M%SZ}/log.txt"
+        try:
+            await storage.upload_call_log(path, "\n".join(session.log_lines))
+            logger.info("Uploaded call transcript to Supabase Storage: %s", path)
+        except Exception:
+            logger.exception("Failed to upload call transcript to Supabase Storage.")

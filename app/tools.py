@@ -1,31 +1,35 @@
-"""Mock backends for the three agent tools (settlement, callback scheduling,
+"""Backends for the three agent tools (settlement, callback scheduling,
 payment plans) and their dispatch from Deepgram's FunctionCallRequest.
 
-Each `process_*`/`schedule_*`/`create_*` function below is a stand-in for a
-real database/payment-gateway/calendar call -- this is where that real
-integration lands. The `_execute_*_tool_call` wrappers add idempotency (run
-at most once per call) on top.
+Each `process_*`/`schedule_*`/`create_*` function persists its outcome to
+Supabase (app/db.py). The `_execute_*_tool_call` wrappers add idempotency
+(run at most once per call) on top. Account identity (`session.account_id`)
+is always resolved server-side at call start, never supplied by the LLM --
+a phone call gives the model no reliable way to know its own database id.
 """
 
-import asyncio
 import json
 import logging
 import uuid
+from datetime import date, datetime
 
 from deepgram.agent.v1.types import AgentV1SendFunctionCallResponse
 
-from . import config
-from .session import CallSession
+from . import db
+from .session import CallSession, append_call_log
 
 logger = logging.getLogger("corafone")
 
 
 # --- Settlement ---
-async def process_account_settlement(account_id: str, amount: float) -> dict:
+async def process_account_settlement(account_id: int, amount: float) -> dict:
     """Charges the account for an agreed lump-sum settlement."""
     logger.info("Ledger: charging account %s for $%.2f...", account_id, amount)
-    await asyncio.sleep(config.MOCK_LEDGER_LATENCY_SECONDS)
+    await db.apply_settlement(account_id)
     transaction_id = f"tx_corafone_{uuid.uuid4().hex[:12]}"
+    await db.log_communication(
+        account_id, f"Settlement processed: {transaction_id}, ${amount:.2f} charged."
+    )
     logger.info("Ledger: SUCCESS -- $%.2f deducted, account %s marked SETTLED.", amount, account_id)
     return {
         "status": "success",
@@ -48,24 +52,34 @@ async def _execute_settlement_tool_call(args: dict, session: CallSession) -> dic
                 "account_status": "CLOSED_SETTLED",
             }
 
-        result = await process_account_settlement(args["account_id"], args["amount"])
+        result = await process_account_settlement(session.account_id, args["amount"])
         session.settlement_settled = True
         session.settlement_transaction_id = result["transaction_id"]
         session.settlement_amount = result["amount_charged"]
+        append_call_log(
+            session, "Billing",
+            f"Settlement processed: {result['transaction_id']}, ${result['amount_charged']:.2f} charged.",
+        )
         return result
 
 
 # --- Callback scheduling ---
-async def schedule_followup_callback(requested_time_description: str) -> dict:
-    """Books a follow-up call into the calendar/dialer system."""
-    logger.info("Scheduler: booking follow-up callback for '%s'...", requested_time_description)
-    await asyncio.sleep(config.MOCK_SCHEDULING_LATENCY_SECONDS)
+async def schedule_followup_callback(account_id: int, callback_datetime: str) -> dict:
+    """Books a follow-up call into the calendar/dialer system. `callback_datetime`
+    is an absolute ISO 8601 string (the LLM resolves it from today's date + the
+    customer's own words -- see config.build_system_prompt rule 4)."""
+    parsed_callback_time = datetime.fromisoformat(callback_datetime)
+    logger.info("Scheduler: booking follow-up callback for %s...", parsed_callback_time)
+    await db.create_scheduled_callback(account_id, parsed_callback_time)
     callback_id = f"cb_corafone_{uuid.uuid4().hex[:12]}"
-    logger.info("Scheduler: SUCCESS -- callback %s booked for '%s'.", callback_id, requested_time_description)
+    await db.log_communication(
+        account_id, f"Callback scheduled: {callback_id}, for {parsed_callback_time.isoformat()}."
+    )
+    logger.info("Scheduler: SUCCESS -- callback %s booked for %s.", callback_id, parsed_callback_time)
     return {
         "status": "scheduled",
         "callback_id": callback_id,
-        "requested_time": requested_time_description,
+        "callback_time": parsed_callback_time.isoformat(),
     }
 
 
@@ -76,31 +90,45 @@ async def _execute_schedule_callback_tool_call(args: dict, session: CallSession)
             return {
                 "status": "already_scheduled",
                 "callback_id": session.callback_id,
-                "requested_time": session.callback_requested_time,
+                "callback_time": session.callback_time,
             }
 
-        result = await schedule_followup_callback(args["requested_datetime_description"])
+        result = await schedule_followup_callback(session.account_id, args["callback_datetime"])
         session.callback_scheduled = True
         session.callback_id = result["callback_id"]
-        session.callback_requested_time = result["requested_time"]
+        session.callback_time = result["callback_time"]
+        append_call_log(
+            session, "Scheduler",
+            f"Callback scheduled: {result['callback_id']}, for {result['callback_time']}.",
+        )
         return result
 
 
 # --- Payment plans ---
 async def create_installment_payment_plan(
-    account_id: str, num_installments: int, amount_per_installment: float, start_date_description: str
+    account_id: int, num_installments: int, amount_per_installment: float, start_date: str
 ) -> dict:
-    """Sets up a recurring installment plan in the billing system."""
+    """Sets up a recurring installment plan in the billing system. `start_date`
+    is an absolute YYYY-MM-DD string (the LLM resolves it from today's date +
+    the customer's own words -- see config.build_system_prompt rule 4)."""
+    parsed_start_date = date.fromisoformat(start_date)
     logger.info(
         "Billing: creating %d-installment plan of $%.2f/mo (starting %s) for account %s...",
-        num_installments, amount_per_installment, start_date_description, account_id,
+        num_installments, amount_per_installment, parsed_start_date, account_id,
     )
-    await asyncio.sleep(config.MOCK_LEDGER_LATENCY_SECONDS)
-    plan_id = f"plan_corafone_{uuid.uuid4().hex[:12]}"
     total_amount = round(num_installments * amount_per_installment, 2)
+    await db.create_payment_plan(
+        account_id, num_installments, amount_per_installment, total_amount, parsed_start_date
+    )
+    plan_id = f"plan_corafone_{uuid.uuid4().hex[:12]}"
+    await db.log_communication(
+        account_id,
+        f"Payment plan created: {plan_id}, ${total_amount:.2f} total across "
+        f"{num_installments} payments starting {parsed_start_date.isoformat()}.",
+    )
     logger.info(
         "Billing: SUCCESS -- plan %s created, $%.2f total across %d payments starting %s.",
-        plan_id, total_amount, num_installments, start_date_description,
+        plan_id, total_amount, num_installments, parsed_start_date,
     )
     return {
         "status": "plan_created",
@@ -108,7 +136,7 @@ async def create_installment_payment_plan(
         "num_installments": num_installments,
         "amount_per_installment": amount_per_installment,
         "total_amount": total_amount,
-        "start_date": start_date_description,
+        "start_date": parsed_start_date.isoformat(),
         "account_status": "PAYMENT_PLAN_ACTIVE",
     }
 
@@ -126,16 +154,21 @@ async def _execute_payment_plan_tool_call(args: dict, session: CallSession) -> d
             }
 
         result = await create_installment_payment_plan(
-            args["account_id"],
+            session.account_id,
             args["num_installments"],
             args["amount_per_installment"],
-            args["start_date_description"],
+            args["start_date"],
         )
         session.payment_plan_created = True
         session.payment_plan_id = result["plan_id"]
         session.payment_plan_installments = result["num_installments"]
         session.payment_plan_amount_per_installment = result["amount_per_installment"]
         session.payment_plan_start_date = result["start_date"]
+        append_call_log(
+            session, "Billing",
+            f"Payment plan created: {result['plan_id']}, ${result['total_amount']:.2f} total across "
+            f"{result['num_installments']} payments starting {result['start_date']}.",
+        )
         return result
 
 
@@ -157,7 +190,14 @@ async def handle_function_call_request(message, session: CallSession) -> None:
             continue
 
         args = json.loads(function_call.arguments)
-        result = await handler(args, session)
+        try:
+            result = await handler(args, session)
+        except Exception:
+            logger.exception("Tool call '%s' failed.", function_call.name)
+            result = {
+                "status": "error",
+                "message": "That didn't go through due to a system issue -- let's try again.",
+            }
 
         await session.agent_connection.send_function_call_response(
             AgentV1SendFunctionCallResponse(

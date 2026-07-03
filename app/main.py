@@ -5,13 +5,14 @@ in app/session.py, settings in app/config.py."""
 
 import json
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from deepgram.agent.v1.types import AgentV1InjectUserMessage
 
-from . import config
+from . import config, db
 from .session import CallSession
 from .voice_agent import initialize_agent_connection, teardown_session
 
@@ -25,7 +26,15 @@ logger = logging.getLogger("corafone")
 # lines -- keep it at WARNING regardless of our own LOG_LEVEL.
 logging.getLogger("websockets").setLevel(logging.WARNING)
 
-app = FastAPI(title=config.APP_TITLE)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await db.init_pool()
+    yield
+    await db.close_pool()
+
+
+app = FastAPI(title=config.APP_TITLE, lifespan=lifespan)
 
 
 @app.get("/health")
@@ -61,6 +70,7 @@ async def handle_audio_stream(websocket: WebSocket) -> None:
     session = CallSession(websocket=websocket)
 
     try:
+        session.account_id = await db.get_account_id_by_phone(config.CUSTOMER_PHONE_NUMBER)
         await initialize_agent_connection(session)
         logger.info("Awaiting incoming browser microphone stream packets...")
 
