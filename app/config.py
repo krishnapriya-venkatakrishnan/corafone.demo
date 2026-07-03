@@ -36,6 +36,9 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 APP_TITLE = "Corafone Voice Gateway"
 WS_ROUTE_PATH = "/ws/stream"
 
+# --- Dashboard (app/dashboard_api.py) ---
+DASHBOARD_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]  # Vite dev server
+
 # --- Models ---
 OPENAI_MODEL = "gpt-4o-mini"  # LLM used for reasoning (via Deepgram's think.provider)
 OPENAI_JUDGE_MODEL = "gpt-4o"  # post-call FDCPA compliance audit (app/audit.py)

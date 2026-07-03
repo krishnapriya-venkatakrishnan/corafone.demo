@@ -524,3 +524,40 @@ Each scenario runs 3 trials and asserts a pass *rate* (2/3), not a single pass/f
 * [`.github/workflows/scenario-tests.yml`](.github/workflows/scenario-tests.yml) -- Layer 3, **manual only** (`workflow_dispatch`, triggered from the Actions tab), with an optional `scenario_filter` input to run just one scenario. Costs real OpenAI tokens, so it's not wired to run automatically -- it's there to demonstrate the suite or validate a prompt change on demand.
 
 **Setup required**: add a real `OPENAI_API_KEY` repo secret (Settings > Secrets and variables > Actions) before running the Layer 3 workflow -- everything else in both workflows uses placeholder values since the DB/Deepgram/Supabase are all mocked in this suite.
+
+---
+
+## Phase 10: TypeScript Dashboard
+
+A single-page dashboard (`dashboard/`, Vite + React + TypeScript + Tailwind) surfacing everything the Supabase schema has accumulated: account status/balance, a compliance rollup (Mini-Miranda pass rate, avg tone score, hallucination/prohibited-conduct counts, total judge spend), a call-history table (expandable to the judge's reasoning and the full transcript), active payment plans and upcoming callbacks, and a live runner for the Layer 3 scenario suite.
+
+**Backend stays Python** -- the dashboard talks to a new read-only + scenario-runner API on the existing FastAPI app (`app/dashboard_api.py`), not a separate service or a direct-to-Supabase client, so the service-role key stays exactly where it's been all along: server-side only.
+
+**Required SQL** (run once, no migration file -- existing rows are test data):
+```sql
+ALTER TABLE voice_session_metrics ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE voice_session_metrics ADD COLUMN transcript_path TEXT;
+```
+Two real gaps surfaced while building this: nothing recorded *when* a call happened (`created_at`), and nothing persisted *where* its transcript landed in Storage (`transcript_path`, now set by `app/voice_agent.py`'s `teardown_session` after a successful upload) -- without the second one, there'd be no way to look up a call's transcript from the dashboard at all.
+
+### API (`app/dashboard_api.py`)
+
+* `GET /api/dashboard/summary` -- account + compliance rollup.
+* `GET /api/dashboard/calls` -- `voice_session_metrics` left-joined to `ai_evaluation_logs`, newest first.
+* `GET /api/dashboard/commitments` -- active payment plans + pending callbacks.
+* `GET /api/dashboard/calls/{session_id}/transcript` -- fetches the transcript from Supabase Storage via the new `storage.download_call_log` (the download-side counterpart to `upload_call_log`).
+* `GET /api/dashboard/scenarios/run?trials=N` -- runs the Layer 3 scenario suite (`tests/scenarios/`) **in-process** and streams results back over Server-Sent Events as each scenario finishes. Deliberately GET, not POST, so the browser's native `EventSource`-style consumption works without extra plumbing (implemented here via a manual `fetch` + stream reader in `dashboard/src/api.ts`, for TypeScript typing convenience).
+
+This is the one place `app/` code imports from `tests/` -- the scenario runner's whole purpose is exposing that suite as a product feature. It reuses `tests/scenarios/harness.py`/`judge.py`/`structural_checks.py`/`definitions.py` directly (no subprocess, no shelling out to pytest, no triggering the GitHub Actions workflow) and swaps in a mocked DB for the run's duration via a new `tests/mock_db.py` (extracted from `tests/conftest.py`'s fixtures so both pytest and this endpoint share one implementation) -- otherwise clicking the button in the dashboard would actually mutate the real demo account's balance/status.
+
+`app/main.py` also gained `CORSMiddleware` (new `config.DASHBOARD_ORIGINS`, defaulting to the Vite dev server's origin) since the dashboard runs on a different port than the backend.
+
+### Running it
+
+```bash
+cd dashboard
+npm install
+npm run dev      # http://localhost:5173, expects the backend on http://127.0.0.1:8000
+```
+
+Set `VITE_API_BASE` (in a `dashboard/.env`) if the backend runs somewhere other than `http://127.0.0.1:8000`.

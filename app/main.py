@@ -8,11 +8,13 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from deepgram.agent.v1.types import AgentV1InjectUserMessage
 
 from . import config, db
+from .dashboard_api import router as dashboard_router
 from .session import CallSession
 from .voice_agent import initialize_agent_connection, teardown_session
 
@@ -35,6 +37,16 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=config.APP_TITLE, lifespan=lifespan)
+
+# Dashboard dev server runs on a different origin/port -- needs CORS to call
+# the read-only + scenario-runner API below.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.DASHBOARD_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+app.include_router(dashboard_router)
 
 
 @app.get("/health")

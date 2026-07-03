@@ -158,11 +158,13 @@ async def teardown_session(session: CallSession) -> None:
         logger.info("Shutting down active Deepgram Voice Agent session.")
         await session.agent_context.__aexit__(None, None, None)
 
+    transcript_path = None
     if session.account_id is not None and session.log_lines:
         path = f"{session.account_id}/{session.call_started_at:%Y%m%dT%H%M%SZ}/log.txt"
         try:
             await storage.upload_call_log(path, "\n".join(session.log_lines))
             logger.info("Uploaded call transcript to Supabase Storage: %s", path)
+            transcript_path = path
         except Exception:
             logger.exception("Failed to upload call transcript to Supabase Storage.")
             session.error_count += 1
@@ -193,6 +195,7 @@ async def teardown_session(session: CallSession) -> None:
                 session.barge_in_count,
                 disposition_code,
                 session.error_count,
+                transcript_path,
             )
         except Exception:
             logger.exception("Failed to write voice_session_metrics for session %s.", session.session_id)

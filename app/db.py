@@ -101,13 +101,15 @@ async def create_voice_session_metrics(
     barge_in_count: int,
     disposition_code: str,
     error_count: int,
+    transcript_path: str | None = None,
 ) -> None:
     async with _pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO voice_session_metrics
-                (session_id, account_id, total_duration_seconds, avg_latency_ms, barge_in_count, disposition_code, error_count)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (session_id, account_id, total_duration_seconds, avg_latency_ms, barge_in_count,
+                 disposition_code, error_count, transcript_path)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             """,
             session_id,
             account_id,
@@ -116,6 +118,7 @@ async def create_voice_session_metrics(
             barge_in_count,
             disposition_code,
             error_count,
+            transcript_path,
         )
 
 
@@ -153,3 +156,74 @@ async def create_ai_evaluation_log(
             judge_reasoning,
             judge_cost_usd,
         )
+
+
+# --- Dashboard reads (app/dashboard_api.py) ---
+async def get_account(phone_number: str) -> dict | None:
+    row = await _pool.fetchrow(
+        "SELECT account_id, customer_name, phone_number, current_balance, status "
+        "FROM accounts WHERE phone_number = $1",
+        phone_number,
+    )
+    return dict(row) if row else None
+
+
+async def get_compliance_summary() -> dict:
+    row = await _pool.fetchrow(
+        """
+        SELECT
+            COUNT(*) AS total_calls,
+            AVG(CASE WHEN mini_miranda_passed THEN 1.0 ELSE 0.0 END) AS mini_miranda_pass_rate,
+            AVG(tone_score) AS avg_tone_score,
+            SUM(CASE WHEN hallucination_detected THEN 1 ELSE 0 END) AS hallucination_count,
+            SUM(CASE WHEN prohibited_conduct_detected THEN 1 ELSE 0 END) AS prohibited_conduct_count,
+            SUM(judge_cost_usd) AS total_judge_cost_usd
+        FROM ai_evaluation_logs
+        """
+    )
+    return dict(row)
+
+
+async def get_calls() -> list[dict]:
+    """Call history: voice_session_metrics left-joined to ai_evaluation_logs
+    (the audit runs in the background, so it may not have landed yet -- or
+    may have failed -- for the most recent call)."""
+    rows = await _pool.fetch(
+        """
+        SELECT
+            vsm.session_id, vsm.account_id, vsm.created_at, vsm.total_duration_seconds,
+            vsm.avg_latency_ms, vsm.barge_in_count, vsm.disposition_code, vsm.error_count,
+            vsm.transcript_path,
+            ael.mini_miranda_passed, ael.pii_redacted_correctly, ael.hallucination_detected,
+            ael.identity_verified_before_disclosure, ael.prohibited_conduct_detected,
+            ael.right_to_cease_honored, ael.tone_score, ael.judge_reasoning, ael.judge_cost_usd
+        FROM voice_session_metrics vsm
+        LEFT JOIN ai_evaluation_logs ael ON ael.session_id = vsm.session_id
+        ORDER BY vsm.created_at DESC
+        """
+    )
+    return [dict(row) for row in rows]
+
+
+async def get_active_payment_plans() -> list[dict]:
+    rows = await _pool.fetch(
+        "SELECT plan_id, account_id, num_installments, amount_per_installment, total_amount, "
+        "start_date, status, created_at FROM payment_plans WHERE status = 'ACTIVE' "
+        "ORDER BY start_date ASC"
+    )
+    return [dict(row) for row in rows]
+
+
+async def get_pending_callbacks() -> list[dict]:
+    rows = await _pool.fetch(
+        "SELECT callback_id, account_id, callback_time, status, created_at "
+        "FROM scheduled_callbacks WHERE status = 'PENDING' ORDER BY callback_time ASC"
+    )
+    return [dict(row) for row in rows]
+
+
+async def get_call_transcript_path(session_id: str) -> str | None:
+    row = await _pool.fetchrow(
+        "SELECT transcript_path FROM voice_session_metrics WHERE session_id = $1", session_id
+    )
+    return row["transcript_path"] if row else None

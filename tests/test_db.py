@@ -69,12 +69,18 @@ async def test_log_communication(patched_db_pool, mock_db_conn):
 
 
 async def test_create_voice_session_metrics(patched_db_pool, mock_db_conn):
-    await db.create_voice_session_metrics("sess_1", 42, 90, 850, 2, "SETTLED", 1)
+    await db.create_voice_session_metrics("sess_1", 42, 90, 850, 2, "SETTLED", 1, "42/20260101T000000Z/log.txt")
 
     mock_db_conn.execute.assert_awaited_once()
     args = mock_db_conn.execute.call_args.args
     assert "INSERT INTO voice_session_metrics" in args[0]
-    assert args[1:] == ("sess_1", 42, 90, 850, 2, "SETTLED", 1)
+    assert args[1:] == ("sess_1", 42, 90, 850, 2, "SETTLED", 1, "42/20260101T000000Z/log.txt")
+
+
+async def test_create_voice_session_metrics_transcript_path_defaults_to_none(patched_db_pool, mock_db_conn):
+    await db.create_voice_session_metrics("sess_1", 42, 90, 850, 2, "SETTLED", 1)
+
+    assert mock_db_conn.execute.call_args.args[-1] is None
 
 
 async def test_create_ai_evaluation_log(patched_db_pool, mock_db_conn):
@@ -86,3 +92,50 @@ async def test_create_ai_evaluation_log(patched_db_pool, mock_db_conn):
     args = mock_db_conn.execute.call_args.args
     assert "INSERT INTO ai_evaluation_logs" in args[0]
     assert args[1:] == ("sess_1", True, True, False, True, False, None, 5, "Solid call.", 0.0045)
+
+
+async def test_get_account_returns_none_when_not_found(patched_db_pool):
+    patched_db_pool.fetchrow.return_value = None
+    assert await db.get_account("+10000000") is None
+
+
+async def test_get_account_returns_dict(patched_db_pool):
+    patched_db_pool.fetchrow.return_value = {
+        "account_id": 42, "customer_name": "Marcus Vance", "phone_number": "+15550199",
+        "current_balance": 500.0, "status": "ACTIVE",
+    }
+    account = await db.get_account("+15550199")
+    assert account["account_id"] == 42
+    assert account["customer_name"] == "Marcus Vance"
+
+
+async def test_get_compliance_summary(patched_db_pool):
+    patched_db_pool.fetchrow.return_value = {
+        "total_calls": 3, "mini_miranda_pass_rate": 1.0, "avg_tone_score": 4.5,
+        "hallucination_count": 0, "prohibited_conduct_count": 0, "total_judge_cost_usd": 0.02,
+    }
+    summary = await db.get_compliance_summary()
+    assert summary["total_calls"] == 3
+    query = patched_db_pool.fetchrow.call_args.args[0]
+    assert "FROM ai_evaluation_logs" in query
+
+
+async def test_get_calls_joins_metrics_and_evaluation(patched_db_pool):
+    patched_db_pool.fetch.return_value = [{"session_id": "sess_1", "disposition_code": "SETTLED"}]
+    calls = await db.get_calls()
+    assert calls == [{"session_id": "sess_1", "disposition_code": "SETTLED"}]
+    query = patched_db_pool.fetch.call_args.args[0]
+    assert "LEFT JOIN ai_evaluation_logs" in query
+    assert "ORDER BY vsm.created_at DESC" in query
+
+
+async def test_get_active_payment_plans_filters_by_status(patched_db_pool):
+    await db.get_active_payment_plans()
+    query = patched_db_pool.fetch.call_args.args[0]
+    assert "WHERE status = 'ACTIVE'" in query
+
+
+async def test_get_pending_callbacks_filters_by_status(patched_db_pool):
+    await db.get_pending_callbacks()
+    query = patched_db_pool.fetch.call_args.args[0]
+    assert "WHERE status = 'PENDING'" in query

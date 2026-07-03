@@ -3,11 +3,11 @@ everything below the boundary (asyncpg, OpenAI, the WebSocket) is mocked."""
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.session import CallSession
+from tests.mock_db import build_mock_db_conn, build_mock_pool
 
 
 class FakeWebSocket:
@@ -60,32 +60,14 @@ def make_function_call(name: str, args: dict, call_id: str = "call_1") -> Simple
 
 @pytest.fixture
 def mock_db_conn():
-    """A fake asyncpg connection: .execute/.fetchrow are AsyncMocks, and
-    .transaction() is an async context manager, matching how app/db.py uses
-    the real asyncpg API."""
-    conn = MagicMock()
-    conn.execute = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=None)
-
-    transaction_cm = MagicMock()
-    transaction_cm.__aenter__ = AsyncMock(return_value=None)
-    transaction_cm.__aexit__ = AsyncMock(return_value=None)
-    conn.transaction = MagicMock(return_value=transaction_cm)
-
-    return conn
+    """A fake asyncpg connection -- see tests/mock_db.py."""
+    return build_mock_db_conn()
 
 
 @pytest.fixture
 def mock_pool(mock_db_conn):
     """A fake asyncpg.Pool whose .acquire() yields mock_db_conn."""
-    pool = MagicMock()
-    acquire_cm = MagicMock()
-    acquire_cm.__aenter__ = AsyncMock(return_value=mock_db_conn)
-    acquire_cm.__aexit__ = AsyncMock(return_value=None)
-    pool.acquire = MagicMock(return_value=acquire_cm)
-    # get_account_id_by_phone calls _pool.fetchrow directly, not via acquire()
-    pool.fetchrow = AsyncMock(return_value=None)
-    return pool
+    return build_mock_pool(mock_db_conn)
 
 
 @pytest.fixture

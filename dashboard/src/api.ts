@@ -1,0 +1,56 @@
+import type {
+  CallRecord,
+  Commitments,
+  DashboardSummary,
+  ScenarioEvent,
+  TranscriptResponse,
+} from "./types";
+
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+
+async function getJSON<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`);
+  if (!response.ok) {
+    throw new Error(`${path} failed: ${response.status} ${response.statusText}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+export const fetchSummary = () => getJSON<DashboardSummary>("/api/dashboard/summary");
+export const fetchCalls = () => getJSON<CallRecord[]>("/api/dashboard/calls");
+export const fetchCommitments = () => getJSON<Commitments>("/api/dashboard/commitments");
+export const fetchTranscript = (sessionId: string) =>
+  getJSON<TranscriptResponse>(`/api/dashboard/calls/${sessionId}/transcript`);
+
+/** Consumes the scenario-runner's SSE stream, calling `onEvent` for each
+ * scenario as it completes and resolving once the server sends "done". */
+export async function runScenarios(
+  trials: number,
+  onEvent: (event: ScenarioEvent) => void,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/dashboard/scenarios/run?trials=${trials}`);
+  if (!response.ok || !response.body) {
+    throw new Error(`scenarios/run failed: ${response.status} ${response.statusText}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE frames are separated by a blank line; each starts with "data: ".
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      const line = frame.trim();
+      if (!line.startsWith("data:")) continue;
+      const event = JSON.parse(line.slice("data:".length).trim()) as ScenarioEvent;
+      onEvent(event);
+      if (event.type === "done") return;
+    }
+  }
+}
