@@ -1,0 +1,31 @@
+name: Tests (Layer 1 - unit)
+
+# Fast, free, deterministic -- everything below the process boundary
+# (asyncpg, OpenAI, the WebSocket, Deepgram) is mocked, so no real secrets
+# are needed here, just placeholder values so app/config.py's required-env
+# check passes at import time.
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    env:
+      DEEPGRAM_API_KEY: ci-placeholder
+      OPENAI_API_KEY: ci-placeholder
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      SUPABASE_URL: https://ci-placeholder.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: ci-placeholder
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: pip install fastapi uvicorn websockets asyncpg httpx openai pydantic python-dotenv deepgram-sdk pytest pytest-asyncio
+
+      - name: Run unit tests
+        run: pytest -v

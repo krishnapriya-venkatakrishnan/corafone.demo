@@ -1,0 +1,44 @@
+name: Tests (Layer 3 - conversation scenarios)
+
+# Manual only (workflow_dispatch) -- costs real OpenAI tokens per run and is
+# inherently non-deterministic (LLM output graded by another LLM), so this
+# is meant to be triggered on demand (e.g. to demonstrate the suite, or to
+# validate a prompt change) rather than on every push.
+#
+# Requires a real OPENAI_API_KEY repo secret (Settings > Secrets and
+# variables > Actions) -- the other env vars below stay placeholders since
+# this suite mocks the DB and never touches Deepgram/Supabase.
+on:
+  workflow_dispatch:
+    inputs:
+      scenario_filter:
+        description: "Optional pytest -k filter (e.g. happy_path_settlement). Leave blank to run all 8 scenarios."
+        required: false
+        default: ""
+
+jobs:
+  scenario-tests:
+    runs-on: ubuntu-latest
+    env:
+      DEEPGRAM_API_KEY: ci-placeholder
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      SUPABASE_URL: https://ci-placeholder.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: ci-placeholder
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: pip install fastapi uvicorn websockets asyncpg httpx openai pydantic python-dotenv deepgram-sdk pytest pytest-asyncio
+
+      - name: Run conversation scenario tests
+        run: |
+          if [ -n "${{ inputs.scenario_filter }}" ]; then
+            pytest -m scenario -v -k "${{ inputs.scenario_filter }}"
+          else
+            pytest -m scenario -v
+          fi

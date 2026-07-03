@@ -478,4 +478,49 @@ Account identity is resolved once per call, server-side (`db.get_account_id_by_p
 
 **Deeper compliance + cost/error signals** (run [`migration_005_telemetry_extensions.sql`](app/database/migration_005_telemetry_extensions.sql) once, after `migration_004`): the judge now also scores `identity_verified_before_disclosure`, `prohibited_conduct_detected`, and `right_to_cease_honored` (`NULL` if the customer never asked to stop — not applicable that call) — these map more directly to what FDCPA actually cares about than tone alone. It also computes `judge_cost_usd`, a real dollar figure from `response.usage`'s token counts against `config.OPENAI_JUDGE_INPUT_COST_PER_1M`/`OPENAI_JUDGE_OUTPUT_COST_PER_1M` — this is the only LLM cost we can measure precisely, since the live conversation's OpenAI calls are intermediated by Deepgram and aren't visible to us (deliberately not estimated). Separately, `CallSession.error_count` counts caught exceptions during the call (failed tool calls, a failed Storage upload) and lands in `voice_session_metrics.error_count`.
 
-FDCPA's call-frequency-limit rule (contact attempts per debtor per week) is out of scope here — it needs cross-call aggregation over `communication_logs`, not a per-call judge, and fits better alongside Phase 9's reporting work.
+FDCPA's call-frequency-limit rule (contact attempts per debtor per week) is out of scope here — it needs cross-call aggregation over `communication_logs`, not a per-call judge, and fits better alongside the future frontend/reporting work.
+
+---
+
+## Phase 9: Automated Test Suite
+
+Every mocked check in the phases above was written as a one-off `python <<EOF ... EOF` snippet to verify a single change, then thrown away. Phase 9 turns that into a real, repeatable `pytest` suite under `tests/` — no real network/DB/LLM calls anywhere in it; everything below the process boundary (`asyncpg`, OpenAI, the WebSocket, Deepgram's agent connection) is mocked via fixtures in `tests/conftest.py`.
+
+* `tests/test_db.py` - every `app/db.py` function issues the right SQL against the right parameters (mocked `asyncpg` pool/connection).
+* `tests/test_tools.py` - the three tools' idempotency guards (only ever hit the DB once per call), correct dispatch, and the error-handling path (a failed tool call or a bad date from the LLM is caught and reported, not a crash).
+* `tests/test_audit.py` - the compliance judge's cost computation and field pass-through, and that an OpenAI or DB failure during the audit never propagates.
+* `tests/test_session.py` - `CallSession` defaults/uniqueness and the `append_call_log` transcript formatting.
+* `tests/test_voice_agent.py` - barge-in counting, turn-latency sampling, and `teardown_session`'s disposition derivation + the FK-ordering gate (the compliance audit only fires after a successful `voice_session_metrics` write).
+
+### Running it
+
+```bash
+pip install pytest pytest-asyncio
+pytest
+```
+
+This is Layer 1 (unit tests, free and instant) of a broader test strategy. A real-Postgres integration layer is a natural future addition; Layer 3 (below) is already built.
+
+### Layer 3: LLM-driven conversation scenarios
+
+Layer 1 can't tell you whether Cora actually *behaves* correctly in a conversation -- only that the deterministic code around her does. `tests/scenarios/` drives a full text conversation between the real system prompt (`config.build_system_prompt()`), the real tool schemas, and the real `app/tools.py` execution functions (DB still mocked) against a scripted adversarial customer persona, entirely over OpenAI's chat completions API (no Deepgram/audio -- this tests decision logic, not voice transport). Each transcript is graded two ways: deterministic structural checks (`tests/scenarios/structural_checks.py` -- e.g. does any Cora turn contain more than one sentence, the exact regression class behind the mid-reply pause bug fixed earlier; does a tool ever get called more than once) and an LLM judge scored against that scenario's specific expected outcome (`tests/scenarios/judge.py`).
+
+Seed scenarios (`tests/scenarios/definitions.py`): happy-path settlement, payment plan, and callback; a wrong-person identity check; vague/ambiguous agreement; a garbled/ambiguous date; discount-pressure beyond the 40% policy cap; and a stop-contact request.
+
+This is the intended way to validate a prompt change (like the "ask for payment in full before laying out options" idea) against the full scenario set, not just one manual call.
+
+**This costs real OpenAI tokens** (Collector + Consumer + judge calls, per trial, per scenario) and is inherently non-deterministic -- LLM output graded by another LLM. It's excluded from the default `pytest` run:
+
+```bash
+pytest -m scenario           # full suite
+pytest -m scenario -k happy_path_settlement   # a single scenario
+```
+
+Each scenario runs 3 trials and asserts a pass *rate* (2/3), not a single pass/fail, since a lone red run isn't necessarily a regression -- worth a look, not an automatic hard failure. Known limitation: the judge only sees the transcript text, not which tools actually fired, so it can't independently verify "the tool was called exactly once" claims in an expected outcome -- that half is covered by the structural checks instead.
+
+### CI
+
+* [`.github/workflows/tests.yml`](.github/workflows/tests.yml) -- Layer 1, on every push/PR. Free and fast (everything mocked), so it runs with placeholder env var values -- no real secrets needed.
+* [`.github/workflows/scenario-tests.yml`](.github/workflows/scenario-tests.yml) -- Layer 3, **manual only** (`workflow_dispatch`, triggered from the Actions tab), with an optional `scenario_filter` input to run just one scenario. Costs real OpenAI tokens, so it's not wired to run automatically -- it's there to demonstrate the suite or validate a prompt change on demand.
+
+**Setup required**: add a real `OPENAI_API_KEY` repo secret (Settings > Secrets and variables > Actions) before running the Layer 3 workflow -- everything else in both workflows uses placeholder values since the DB/Deepgram/Supabase are all mocked in this suite.
