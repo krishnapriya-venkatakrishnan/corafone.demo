@@ -1,6 +1,7 @@
 """Per-call state, passed explicitly to every handler."""
 
 import asyncio
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -14,6 +15,10 @@ class CallSession:
     the live Deepgram Voice Agent connection."""
 
     websocket: WebSocket
+
+    # Unique per call -- ties voice_session_metrics to ai_evaluation_logs
+    # (see app/audit.py and app/voice_agent.py's teardown_session).
+    session_id: str = field(default_factory=lambda: f"sess_{uuid.uuid4().hex[:10]}")
 
     # Resolved once at call start (app/db.py), the real Supabase account this
     # call is for -- never taken from the LLM (see app/tools.py for why).
@@ -48,6 +53,12 @@ class CallSession:
     # (see app/voice_agent.py's teardown_session and append_call_log below).
     call_started_at: datetime = field(default_factory=datetime.now)
     log_lines: list[str] = field(default_factory=list)
+
+    # Telemetry, written to voice_session_metrics on teardown.
+    barge_in_count: int = 0
+    last_user_turn_at: datetime | None = None
+    latency_samples_ms: list[float] = field(default_factory=list)
+    error_count: int = 0
 
 
 def append_call_log(session: "CallSession", tag: str, message: str) -> None:

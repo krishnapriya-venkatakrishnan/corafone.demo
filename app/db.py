@@ -91,3 +91,65 @@ async def log_communication(account_id: int, content: str) -> None:
             account_id,
             content,
         )
+
+
+async def create_voice_session_metrics(
+    session_id: str,
+    account_id: int,
+    total_duration_seconds: int,
+    avg_latency_ms: int,
+    barge_in_count: int,
+    disposition_code: str,
+    error_count: int,
+) -> None:
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO voice_session_metrics
+                (session_id, account_id, total_duration_seconds, avg_latency_ms, barge_in_count, disposition_code, error_count)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+            session_id,
+            account_id,
+            total_duration_seconds,
+            avg_latency_ms,
+            barge_in_count,
+            disposition_code,
+            error_count,
+        )
+
+
+async def create_ai_evaluation_log(
+    session_id: str,
+    mini_miranda_passed: bool,
+    pii_redacted_correctly: bool,
+    hallucination_detected: bool,
+    identity_verified_before_disclosure: bool,
+    prohibited_conduct_detected: bool,
+    right_to_cease_honored: bool | None,
+    tone_score: int,
+    judge_reasoning: str,
+    judge_cost_usd: float,
+) -> None:
+    """Requires a voice_session_metrics row for `session_id` to already exist
+    (foreign key) -- see app/voice_agent.py's teardown_session for ordering."""
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO ai_evaluation_logs
+                (session_id, mini_miranda_passed, pii_redacted_correctly, hallucination_detected,
+                 identity_verified_before_disclosure, prohibited_conduct_detected, right_to_cease_honored,
+                 tone_score, judge_reasoning, judge_cost_usd)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            """,
+            session_id,
+            mini_miranda_passed,
+            pii_redacted_correctly,
+            hallucination_detected,
+            identity_verified_before_disclosure,
+            prohibited_conduct_detected,
+            right_to_cease_honored,
+            tone_score,
+            judge_reasoning,
+            judge_cost_usd,
+        )

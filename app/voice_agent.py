@@ -7,6 +7,7 @@ uploads it to Supabase Storage on teardown -- see app/storage.py."""
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 from deepgram import AsyncDeepgramClient
@@ -21,7 +22,7 @@ from deepgram.agent.v1.types import (
     AgentV1SettingsAudioOutput,
 )
 
-from . import config, storage
+from . import audit, config, db, storage
 from .session import CallSession, append_call_log
 from .tools import handle_function_call_request
 
@@ -53,6 +54,7 @@ def on_agent_message(message: Any, session: CallSession) -> None:
         # Flux already confirmed this is real speech -- stop playback now.
         logger.info("[Barge-in] Customer started speaking -- clearing playback.")
         append_call_log(session, "Barge-in", "Customer started speaking -- clearing playback.")
+        session.barge_in_count += 1
         asyncio.create_task(send_control_packet(session, "clear_audio_buffer"))
         return
 
@@ -63,6 +65,18 @@ def on_agent_message(message: Any, session: CallSession) -> None:
     if message_type == "ConversationText":
         logger.info("[%s]: %s", message.role, message.content)
         append_call_log(session, message.role, message.content)
+        if message.role == "user":
+            session.last_user_turn_at = datetime.now()
+        return
+
+    if message_type == "AgentStartedSpeaking":
+        # Turn-latency sample: gap between the customer finishing and Cora
+        # starting her reply (telemetry -- see teardown_session below).
+        if session.last_user_turn_at is not None:
+            elapsed_ms = (datetime.now() - session.last_user_turn_at).total_seconds() * 1000
+            session.latency_samples_ms.append(elapsed_ms)
+            session.last_user_turn_at = None
+        logger.info("Voice Agent event: %s", message_type)
         return
 
     if message_type in ("Error", "Warning"):
@@ -72,8 +86,8 @@ def on_agent_message(message: Any, session: CallSession) -> None:
         append_call_log(session, message_type, str(description))
         return
 
-    # Welcome, SettingsApplied, AgentStartedSpeaking, AgentThinking,
-    # AgentAudioDone, etc. -- console-only, not curated into the transcript.
+    # Welcome, SettingsApplied, AgentThinking, AgentAudioDone, etc. --
+    # console-only, not curated into the transcript.
     logger.info("Voice Agent event: %s", message_type)
 
 
@@ -151,3 +165,39 @@ async def teardown_session(session: CallSession) -> None:
             logger.info("Uploaded call transcript to Supabase Storage: %s", path)
         except Exception:
             logger.exception("Failed to upload call transcript to Supabase Storage.")
+            session.error_count += 1
+
+    if session.account_id is not None:
+        if session.settlement_settled:
+            disposition_code = "SETTLED"
+        elif session.payment_plan_created:
+            disposition_code = "PAYMENT_PLAN_ACTIVE"
+        elif session.callback_scheduled:
+            disposition_code = "CALLBACK_SCHEDULED"
+        else:
+            disposition_code = "NO_ACTION"
+
+        total_duration_seconds = int((datetime.now() - session.call_started_at).total_seconds())
+        avg_latency_ms = (
+            int(sum(session.latency_samples_ms) / len(session.latency_samples_ms))
+            if session.latency_samples_ms
+            else 0
+        )
+
+        try:
+            await db.create_voice_session_metrics(
+                session.session_id,
+                session.account_id,
+                total_duration_seconds,
+                avg_latency_ms,
+                session.barge_in_count,
+                disposition_code,
+                session.error_count,
+            )
+        except Exception:
+            logger.exception("Failed to write voice_session_metrics for session %s.", session.session_id)
+        else:
+            # FK-dependent on the row above, and an LLM judge call shouldn't
+            # add latency to teardown -- runs in the background.
+            if session.log_lines:
+                asyncio.create_task(audit.run_compliance_audit(session))

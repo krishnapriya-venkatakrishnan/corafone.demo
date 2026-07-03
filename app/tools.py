@@ -194,6 +194,7 @@ async def handle_function_call_request(message, session: CallSession) -> None:
             result = await handler(args, session)
         except Exception:
             logger.exception("Tool call '%s' failed.", function_call.name)
+            session.error_count += 1
             result = {
                 "status": "error",
                 "message": "That didn't go through due to a system issue -- let's try again.",

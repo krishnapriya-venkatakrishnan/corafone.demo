@@ -38,8 +38,16 @@ WS_ROUTE_PATH = "/ws/stream"
 
 # --- Models ---
 OPENAI_MODEL = "gpt-4o-mini"  # LLM used for reasoning (via Deepgram's think.provider)
+OPENAI_JUDGE_MODEL = "gpt-4o"  # post-call FDCPA compliance audit (app/audit.py)
 DEEPGRAM_AGENT_STT_MODEL = "flux-general-en"  # STT + turn detection
 DEEPGRAM_TTS_MODEL = "aura-2-harmonia-en"  # TTS voice: empathetic, calm, professional
+
+# gpt-4o list pricing as of this writing -- update if OpenAI's pricing changes.
+# Used to compute the judge's real per-call cost (app/audit.py); the live
+# conversation's cost isn't measurable from our side (Deepgram intermediates
+# those OpenAI calls), so it's intentionally not estimated here.
+OPENAI_JUDGE_INPUT_COST_PER_1M = 2.50
+OPENAI_JUDGE_OUTPUT_COST_PER_1M = 10.00
 
 # --- Audio format (must match frontend/app.js exactly) ---
 AUDIO_ENCODING = "linear16"

@@ -1,11 +1,10 @@
 # Corafone Voice Gateway
 
-The Corafone automated voice engine, built up in phases. Phase 1 laid the data foundation (Supabase schema + an offline multi-agent simulation sandbox). Phase 2 added the live, real-time streaming core of the gateway. Phase 3 gave that gateway its conversational intelligence. Phase 4 closed the loop with real-time synthesized audio replies. Phase 5 gave the gateway a real, in-browser client to talk to. Phase 6 turns Cora from a reactive chatbot into an agent that can take real actions — settling an account balance — via OpenAI function calling.
+The Corafone automated voice engine, built up in phases. Phase 1 laid the data foundation (Supabase schema). Phase 2 added the live, real-time streaming core of the gateway. Phase 3 gave that gateway its conversational intelligence. Phase 4 closed the loop with real-time synthesized audio replies. Phase 5 gave the gateway a real, in-browser client to talk to. Phase 6 turns Cora from a reactive chatbot into an agent that can take real actions — settling an account balance — via OpenAI function calling.
 
 ## Project Structure
 
 * `app/main.py` - The live web server core. Exposes a JSON health check endpoint and a persistent, bidirectional WebSocket pipeline (`/ws/stream`): incoming audio lazily opens a Deepgram connection on the first captured byte, whose `start_listening()` loop is run as a background task so finalized transcripts actually reach the app (registering `.on(EventType.MESSAGE, ...)` alone does not pump the socket). Finalized transcripts drive a non-blocking OpenAI GPT-4o chat loop bound to a `process_account_settlement` function-calling tool, guarded by a per-call lock/flag so only the first turn to reach it can ever charge the account — later or overlapping turns are told it's already settled instead of double-charging. The resulting reply text (or post-tool-call confirmation) is piped to Deepgram Aura TTS, with the resulting audio bytes written straight back down the same socket. The socket loop also accepts `mock_transcript` text frames alongside binary audio, so transcript-triggered flows can be exercised without a live mic.
-* `app/simulation.py` - The offline sandbox script. Runs an automated turn-by-turn conversation between an AI Collector persona and an adversarial AI Consumer persona, passes the transcript to a GPT-4o auditing judge, and logs the structured metrics straight to Supabase.
 * `app/database/script.sql` - Schema definitions and seed data for the Supabase tables (accounts, communication logs, session metrics, and AI evaluation logs).
 * `frontend/index.html` - The Corafone Voice UI. A self-contained browser client (vanilla JS + inline Tailwind CSS) that captures microphone audio, downsamples it to 8000Hz mono PCM16, and streams it to `/ws/stream`, while playing back the agent's synthesized voice gaplessly through the Web Audio API. See [Phase 5: Browser Voice Client](#phase-5-browser-voice-client) below.
 * `test_stream.py` - A localized client automation script used to simulate live network traffic. A background task listens for and prints synthesized audio bytes streaming back down while the script waits for Cora's greeting, then injects a `mock_transcript` text frame ("I accept the $300 settlement. Go ahead and charge it.") to exercise the agentic settlement tool-call path end-to-end.
@@ -38,9 +37,9 @@ Note: Make sure to use the Supabase Connection Pooler URI string (port 6543) to 
 
 ---
 
-## Phase 1: Data Engine & Simulation Sandbox
+## Phase 1: Data Engine
 
-Phase 1 focuses on setting up our persistent cloud database layer on Supabase, establishing our target relational schemas, and running an autonomous multi-agent simulation sandbox to test agent negotiations and compliance auditing before wiring up live audio streams.
+Phase 1 focuses on setting up our persistent cloud database layer on Supabase and establishing our target relational schemas, ahead of wiring up live audio streams in later phases.
 
 ### Database Initialization
 
@@ -93,23 +92,6 @@ INSERT INTO accounts (customer_name, phone_number, current_balance, status)
 VALUES ('John', '+15550199', 500.00, 'ACTIVE')
 ON CONFLICT (phone_number) DO NOTHING;
 ```
-
-### Running the Multi-Agent Sandbox
-
-The simulation script uses two specialized LLM instances to simulate an outbound collection call.
-
-* **Cora (AI Collector):** Operates under rigid corporate boundaries. She must state the legal Mini-Miranda disclosure on turn one and cannot offer more than a 40% settlement discount.
-* **John (AI Consumer):** Acts as an adversarial actor experiencing financial hardship, demanding a 60% discount and pushing boundaries.
-
-Once the dialogue loop terminates, a separate structured audit engine (GPT-4o) acts as a regulatory judge to verify legal compliance, rate the agent's tone, and write the resulting session records to Supabase.
-
-To run the simulation sandbox:
-
-```bash
-python app/simulation.py
-```
-
-The console will stream the live negotiation followed by confirmation of the session and evaluation records being committed to the database.
 
 ---
 
@@ -483,3 +465,17 @@ Account identity is resolved once per call, server-side (`db.get_account_id_by_p
 **Manual setup required** (once, like the SQL migrations):
 1. In the Supabase dashboard, create a **private** Storage bucket named `communications`.
 2. Add `SUPABASE_URL` (project base URL) and `SUPABASE_SERVICE_ROLE_KEY` (Project Settings > API — service-role secret, backend-only, never exposed to the browser) to `.env`.
+
+---
+
+## Phase 8: Telemetry & FDCPA Audits
+
+`voice_session_metrics` and `ai_evaluation_logs` were part of the Phase 1 schema from the start, but never written by a real call. Phase 8 wires both into the live path.
+
+**Session metrics** (`app/voice_agent.py`'s `teardown_session`, written synchronously via a new `db.create_voice_session_metrics`): `total_duration_seconds` from `CallSession.call_started_at`; `barge_in_count`, incremented on every `UserStartedSpeaking` event (barge-ins were already detected for playback-clearing, just not counted before); `avg_latency_ms`, a new signal — the gap between the customer's last `ConversationText` turn and Cora's next `AgentStartedSpeaking` event, sampled per turn in `on_agent_message` and averaged at teardown; and `disposition_code` (`SETTLED` / `PAYMENT_PLAN_ACTIVE` / `CALLBACK_SCHEDULED` / `NO_ACTION`), derived from the same idempotency flags the three tools already maintain.
+
+**Compliance audit** (new `app/audit.py`): an OpenAI structured-output judge (`EvaluationReport`) scores the real curated transcript (`session.log_lines`, the same one uploaded to Storage) and writes the result via `db.create_ai_evaluation_log`. Runs as a background task after the session-metrics row lands (`ai_evaluation_logs.session_id` is a foreign key into `voice_session_metrics`, so ordering matters), so a slower LLM judge call never delays call teardown.
+
+**Deeper compliance + cost/error signals** (run [`migration_005_telemetry_extensions.sql`](app/database/migration_005_telemetry_extensions.sql) once, after `migration_004`): the judge now also scores `identity_verified_before_disclosure`, `prohibited_conduct_detected`, and `right_to_cease_honored` (`NULL` if the customer never asked to stop — not applicable that call) — these map more directly to what FDCPA actually cares about than tone alone. It also computes `judge_cost_usd`, a real dollar figure from `response.usage`'s token counts against `config.OPENAI_JUDGE_INPUT_COST_PER_1M`/`OPENAI_JUDGE_OUTPUT_COST_PER_1M` — this is the only LLM cost we can measure precisely, since the live conversation's OpenAI calls are intermediated by Deepgram and aren't visible to us (deliberately not estimated). Separately, `CallSession.error_count` counts caught exceptions during the call (failed tool calls, a failed Storage upload) and lands in `voice_session_metrics.error_count`.
+
+FDCPA's call-frequency-limit rule (contact attempts per debtor per week) is out of scope here — it needs cross-call aggregation over `communication_logs`, not a per-call judge, and fits better alongside Phase 9's reporting work.
