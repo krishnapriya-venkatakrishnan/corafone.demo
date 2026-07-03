@@ -1,0 +1,139 @@
+"""Deepgram Voice Agent protocol relay: opens the managed STT+LLM+TTS
+session, relays audio and control packets to/from the browser, and
+dispatches function calls to app/tools.py. Deepgram owns turn-taking,
+barge-in, and conversation history; this module does not."""
+
+import asyncio
+import json
+import logging
+from typing import Any
+
+from deepgram import AsyncDeepgramClient
+from deepgram.core.events import EventType
+from deepgram.types import ThinkSettingsV1, SpeakSettingsV1
+from deepgram.agent.v1.types import (
+    AgentV1Settings,
+    AgentV1SettingsAgentContext,
+    AgentV1SettingsAgentContextListen,
+    AgentV1SettingsAudio,
+    AgentV1SettingsAudioInput,
+    AgentV1SettingsAudioOutput,
+)
+
+from . import config
+from .session import CallSession
+from .tools import handle_function_call_request
+
+logger = logging.getLogger("corafone")
+
+deepgram_client = AsyncDeepgramClient(api_key=config.DEEPGRAM_API_KEY)
+
+
+async def send_control_packet(session: CallSession, packet_type: str) -> None:
+    """Sends a small JSON control frame to the browser (see app.js's
+    ws.onmessage handler for the matching clear-buffer behavior)."""
+    try:
+        await session.websocket.send_text(json.dumps({"type": packet_type}))
+    except Exception:
+        logger.exception("Failed to send '%s' control packet to client.", packet_type)
+
+
+def on_agent_message(message: Any, session: CallSession) -> None:
+    """Deepgram socket event callback. Raw `bytes` are synthesized speech,
+    relayed straight to the browser. Everything else is a JSON event
+    discriminated by `.type`."""
+    if isinstance(message, bytes):
+        asyncio.create_task(session.websocket.send_bytes(message))
+        return
+
+    message_type = getattr(message, "type", None)
+
+    if message_type == "UserStartedSpeaking":
+        # Flux already confirmed this is real speech -- stop playback now.
+        logger.info("[Barge-in] Customer started speaking -- clearing playback.")
+        asyncio.create_task(send_control_packet(session, "clear_audio_buffer"))
+        return
+
+    if message_type == "FunctionCallRequest":
+        asyncio.create_task(handle_function_call_request(message, session))
+        return
+
+    if message_type == "ConversationText":
+        logger.info("[%s]: %s", message.role, message.content)
+        return
+
+    if message_type in ("Error", "Warning"):
+        log_fn = logger.error if message_type == "Error" else logger.warning
+        log_fn("Deepgram Voice Agent %s: %s", message_type, getattr(message, "description", message))
+        return
+
+    # Welcome, SettingsApplied, AgentStartedSpeaking, AgentThinking,
+    # AgentAudioDone, etc. -- informational only.
+    logger.info("Voice Agent event: %s", message_type)
+
+
+def on_agent_error(error: Any, **kwargs) -> None:
+    logger.error("Deepgram Voice Agent stream error: %s", error)
+
+
+async def initialize_agent_connection(session: CallSession) -> None:
+    """Opens the Voice Agent WebSocket and sends the Settings message
+    (STT/LLM/TTS + tools + greeting). Runs immediately on connect --
+    Deepgram speaks the greeting as soon as settings are applied, no mic
+    audio needed first."""
+    logger.info("Opening Deepgram Voice Agent session...")
+    session.agent_context = deepgram_client.agent.v1.connect()
+    session.agent_connection = await session.agent_context.__aenter__()
+    session.agent_connection.on(
+        EventType.MESSAGE, lambda message, **kwargs: on_agent_message(message, session)
+    )
+    session.agent_connection.on(EventType.ERROR, on_agent_error)
+    session.agent_listen_task = asyncio.create_task(session.agent_connection.start_listening())
+
+    await session.agent_connection.send_settings(
+        AgentV1Settings(
+            audio=AgentV1SettingsAudio(
+                input=AgentV1SettingsAudioInput(
+                    encoding=config.AUDIO_ENCODING, sample_rate=config.AUDIO_SAMPLE_RATE
+                ),
+                output=AgentV1SettingsAudioOutput(
+                    encoding=config.AUDIO_ENCODING,
+                    sample_rate=config.AUDIO_SAMPLE_RATE,
+                    container="none",
+                ),
+            ),
+            agent=AgentV1SettingsAgentContext(
+                listen=AgentV1SettingsAgentContextListen(
+                    provider={
+                        "type": "deepgram",
+                        "version": "v2",
+                        "model": config.DEEPGRAM_AGENT_STT_MODEL,
+                    }
+                ),
+                think=ThinkSettingsV1(
+                    provider={"type": "open_ai", "model": config.OPENAI_MODEL},
+                    prompt=config.SYSTEM_PROMPT,
+                    functions=[
+                        config.SETTLEMENT_FUNCTION_SCHEMA,
+                        config.SCHEDULE_CALLBACK_FUNCTION_SCHEMA,
+                        config.OFFER_PAYMENT_PLAN_FUNCTION_SCHEMA,
+                    ],
+                ),
+                speak=SpeakSettingsV1(
+                    provider={"type": "deepgram", "model": config.DEEPGRAM_TTS_MODEL}
+                ),
+                # Identity check only -- see SYSTEM_PROMPT rule 1.
+                greeting=config.GREETING_IDENTITY_CHECK,
+            ),
+        )
+    )
+    logger.info("Voice Agent settings sent -- awaiting SettingsApplied + greeting.")
+
+
+async def teardown_session(session: CallSession) -> None:
+    """Releases Deepgram resources when the call ends, however it ends."""
+    if session.agent_listen_task is not None:
+        session.agent_listen_task.cancel()
+    if session.agent_context is not None:
+        logger.info("Shutting down active Deepgram Voice Agent session.")
+        await session.agent_context.__aexit__(None, None, None)
