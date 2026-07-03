@@ -91,22 +91,33 @@ class TranscriptResponse(BaseModel):
 
 
 # --- Read-only endpoints ---
+@router.get("/accounts", response_model=list[AccountSummary])
+async def get_accounts() -> list[dict]:
+    """All demo accounts, for the account picker (frontend/ voice demo and
+    this dashboard's account switcher)."""
+    return await db.get_accounts()
+
+
 @router.get("/summary", response_model=DashboardSummary)
-async def get_summary() -> DashboardSummary:
-    account = await db.get_account(config.CUSTOMER_PHONE_NUMBER)
-    compliance = await db.get_compliance_summary()
+async def get_summary(account_id: int | None = None) -> DashboardSummary:
+    account = (
+        await db.get_account_by_id(account_id)
+        if account_id is not None
+        else await db.get_account(config.DEFAULT_CUSTOMER_PHONE_NUMBER)
+    )
+    compliance = await db.get_compliance_summary(account_id)
     return DashboardSummary(account=account, compliance=compliance)
 
 
 @router.get("/calls", response_model=list[CallRecord])
-async def get_calls() -> list[dict]:
-    return await db.get_calls()
+async def get_calls(account_id: int | None = None) -> list[dict]:
+    return await db.get_calls(account_id)
 
 
 @router.get("/commitments", response_model=Commitments)
-async def get_commitments() -> Commitments:
-    payment_plans = await db.get_active_payment_plans()
-    scheduled_callbacks = await db.get_pending_callbacks()
+async def get_commitments(account_id: int | None = None) -> Commitments:
+    payment_plans = await db.get_active_payment_plans(account_id)
+    scheduled_callbacks = await db.get_pending_callbacks(account_id)
     return Commitments(payment_plans=payment_plans, scheduled_callbacks=scheduled_callbacks)
 
 

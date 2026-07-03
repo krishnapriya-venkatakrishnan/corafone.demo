@@ -1,4 +1,5 @@
 import type {
+  AccountSummary,
   CallRecord,
   Commitments,
   DashboardSummary,
@@ -16,9 +17,16 @@ async function getJSON<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export const fetchSummary = () => getJSON<DashboardSummary>("/api/dashboard/summary");
-export const fetchCalls = () => getJSON<CallRecord[]>("/api/dashboard/calls");
-export const fetchCommitments = () => getJSON<Commitments>("/api/dashboard/commitments");
+const accountQuery = (accountId: number | null) =>
+  accountId === null ? "" : `?account_id=${accountId}`;
+
+export const fetchAccounts = () => getJSON<AccountSummary[]>("/api/dashboard/accounts");
+export const fetchSummary = (accountId: number | null = null) =>
+  getJSON<DashboardSummary>(`/api/dashboard/summary${accountQuery(accountId)}`);
+export const fetchCalls = (accountId: number | null = null) =>
+  getJSON<CallRecord[]>(`/api/dashboard/calls${accountQuery(accountId)}`);
+export const fetchCommitments = (accountId: number | null = null) =>
+  getJSON<Commitments>(`/api/dashboard/commitments${accountQuery(accountId)}`);
 export const fetchTranscript = (sessionId: string) =>
   getJSON<TranscriptResponse>(`/api/dashboard/calls/${sessionId}/transcript`);
 

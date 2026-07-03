@@ -11,14 +11,23 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
   );
 }
 
-export default function ComplianceRollup({ compliance }: { compliance: ComplianceSummary | null }) {
+export default function ComplianceRollup({
+  compliance,
+  scopeLabel,
+}: {
+  compliance: ComplianceSummary | null;
+  scopeLabel: string;
+}) {
   const pct = (v: number | null) => (v === null ? "—" : `${Math.round(v * 100)}%`);
   const score = (v: number | null) => (v === null ? "—" : v.toFixed(1));
   const cost = (v: number | null) => (v === null ? "—" : `$${v.toFixed(4)}`);
 
   return (
     <div className="rounded-xl bg-neutral-900 border border-neutral-800 p-5 h-full">
-      <h2 className="text-sm font-medium text-neutral-400 mb-4">Compliance rollup</h2>
+      <div className="flex items-baseline justify-between mb-4">
+        <h2 className="text-sm font-medium text-neutral-400">Compliance rollup</h2>
+        <span className="text-xs text-neutral-600">{scopeLabel}</span>
+      </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-6">
         <Stat label="Calls audited" value={String(compliance?.total_calls ?? 0)} />
         <Stat

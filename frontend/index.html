@@ -25,6 +25,14 @@
       <p class="text-sm text-neutral-500">Voice Agent</p>
     </div>
 
+    <!-- Account picker: pick which demo account to call as -->
+    <div class="w-full space-y-2">
+      <p class="text-xs text-neutral-600 text-center">Pick an account to call</p>
+      <div id="accountRow" class="w-full flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
+        <p class="text-xs text-neutral-600 text-center py-2">Loading accounts…</p>
+      </div>
+    </div>
+
     <!-- Status + Timer -->
     <div class="flex flex-col items-center gap-2">
       <div id="statusPill" class="flex items-center gap-2 px-4 py-1.5 rounded-full bg-neutral-900 border border-neutral-800 text-sm text-neutral-400 transition-colors duration-300">

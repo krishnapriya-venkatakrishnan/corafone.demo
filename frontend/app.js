@@ -6,13 +6,23 @@
  */
 
 // --- Config ---
-const WS_URL = "ws://127.0.0.1:8000/ws/stream"; // FastAPI backend's /ws/stream
+const API_BASE = "http://127.0.0.1:8000";        // FastAPI backend
+const WS_BASE = "ws://127.0.0.1:8000/ws/stream"; // same backend's /ws/stream
 const TARGET_SAMPLE_RATE = 24000;      // Voice Agent session rate, in and out
 const UPLOAD_INTERVAL_MS = 100;        // how often we flush mic audio upstream
 const PLAYBACK_SAMPLE_RATE = 24000;    // backend sends PCM16 @ 24kHz mono
 const PLAYBACK_STARTUP_BUFFER_SECONDS = 0.1; // cushion for the first scheduled buffer
 
+const STATUS_BADGE_STYLES = {
+  ACTIVE: "bg-emerald-500/10 text-emerald-300 border-emerald-500/20",
+  SETTLED: "bg-sky-500/10 text-sky-300 border-sky-500/20",
+  PAYMENT_PLAN_ACTIVE: "bg-sky-500/10 text-sky-300 border-sky-500/20",
+  DO_NOT_CALL: "bg-red-500/10 text-red-300 border-red-500/20",
+  DISPUTE: "bg-amber-500/10 text-amber-300 border-amber-500/20",
+};
+
 // --- DOM references ---
+const accountRow = document.getElementById("accountRow");
 const micButton = document.getElementById("micButton");
 const micIcon = document.getElementById("micIcon");
 const statusText = document.getElementById("statusText");
@@ -24,6 +34,7 @@ const helperText = document.getElementById("helperText");
 const errorBanner = document.getElementById("errorBanner");
 
 // --- App state ---
+let selectedPhoneNumber = null; // which demo account the next call connects as
 let ws = null;
 let micStream = null;
 let audioContext = null;        // capture-side context (native sample rate)
@@ -63,19 +74,82 @@ function setStatus(state) {
   ring1.classList.toggle("hidden", !isLive);
   ring2.classList.toggle("hidden", !isLive);
   micButton.classList.toggle("breathe", state === "listening");
+  accountRow.classList.toggle("opacity-40", isLive);
+  accountRow.classList.toggle("pointer-events-none", isLive);
 
   if (state === "disconnected") {
     micIcon.innerHTML = MIC_ICON_PATH;
     micButton.classList.remove("bg-red-950", "border-red-800", "text-red-300");
     micButton.classList.add("bg-neutral-800", "border-neutral-700", "text-neutral-300");
-    helperText.textContent = "Tap the microphone to start a live call with Cora.";
+    micButton.disabled = true;
+    helperText.textContent = "Tap an account's call button above to start a live call with Cora.";
   } else {
     micIcon.innerHTML = HANGUP_ICON_PATH;
     micButton.classList.remove("bg-neutral-800", "border-neutral-700", "text-neutral-300");
     micButton.classList.add("bg-red-950", "border-red-800", "text-red-300");
+    micButton.disabled = false;
     helperText.textContent = state === "connecting"
       ? "Establishing connection…"
-      : "Tap again to end the call.";
+      : "Tap the button to end the call.";
+  }
+}
+
+// --- Account picker ---
+const CALL_ICON_PATH = `
+  <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"></path>
+`;
+
+async function loadAccounts() {
+  try {
+    const response = await fetch(`${API_BASE}/api/dashboard/accounts`);
+    if (!response.ok) throw new Error(`accounts fetch failed: ${response.status}`);
+    const accounts = await response.json();
+    renderAccounts(accounts);
+  } catch (err) {
+    console.error("Failed to load accounts:", err);
+    accountRow.innerHTML = `<p class="text-xs text-red-400 text-center py-2">Couldn't load accounts. Is the backend running?</p>`;
+  }
+}
+
+function renderAccounts(accounts) {
+  if (accounts.length === 0) {
+    accountRow.innerHTML = `<p class="text-xs text-neutral-600 text-center py-2">No demo accounts found.</p>`;
+    return;
+  }
+
+  accountRow.innerHTML = "";
+  for (const account of accounts) {
+    const card = document.createElement("div");
+    card.className =
+      "w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-800";
+
+    const badgeStyle = STATUS_BADGE_STYLES[account.status] ?? STATUS_BADGE_STYLES.ACTIVE;
+    card.innerHTML = `
+      <div class="min-w-0">
+        <p class="text-sm text-neutral-200 truncate">${account.customer_name}</p>
+        <div class="flex items-center gap-2 mt-0.5">
+          <span class="text-xs text-neutral-500 tabular-nums">$${account.current_balance.toFixed(2)}</span>
+          <span class="text-[10px] font-medium px-1.5 py-0.5 rounded-full border ${badgeStyle}">${account.status.replaceAll("_", " ")}</span>
+        </div>
+      </div>
+      <button
+        type="button"
+        aria-label="Call ${account.customer_name}"
+        class="call-account-btn shrink-0 w-9 h-9 rounded-full bg-emerald-600 hover:bg-emerald-500 text-neutral-950 flex items-center justify-center transition-colors"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4">
+          ${CALL_ICON_PATH}
+        </svg>
+      </button>
+    `;
+
+    card.querySelector(".call-account-btn").addEventListener("click", () => {
+      if (callState !== "disconnected") return;
+      selectedPhoneNumber = account.phone_number;
+      startCall();
+    });
+
+    accountRow.appendChild(card);
   }
 }
 
@@ -379,7 +453,10 @@ function stopPlayback() {
 // --- WebSocket lifecycle ---
 function connectWebSocket() {
   return new Promise((resolve, reject) => {
-    ws = new WebSocket(WS_URL);
+    const url = selectedPhoneNumber
+      ? `${WS_BASE}?phone_number=${encodeURIComponent(selectedPhoneNumber)}`
+      : WS_BASE;
+    ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => resolve();
@@ -416,8 +493,9 @@ function connectWebSocket() {
 
 // --- Connect / disconnect orchestration ---
 async function startCall() {
+  if (!selectedPhoneNumber || callState !== "disconnected") return;
+
   clearError();
-  micButton.disabled = true;
   setStatus("connecting");
 
   try {
@@ -436,8 +514,6 @@ async function startCall() {
         : "Couldn't connect to Cora. Is the backend running?"
     );
     endCall();
-  } finally {
-    micButton.disabled = false;
   }
 }
 
@@ -446,6 +522,7 @@ function endCall() {
   stopTimer();
   stopMicCapture();
   stopPlayback();
+  selectedPhoneNumber = null;
 
   if (ws) {
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
@@ -457,9 +534,7 @@ function endCall() {
 }
 
 micButton.addEventListener("click", () => {
-  if (callState === "disconnected") {
-    startCall();
-  } else {
+  if (callState !== "disconnected") {
     endCall();
   }
 });
@@ -469,3 +544,4 @@ window.addEventListener("beforeunload", () => {
 });
 
 setStatus("disconnected");
+loadAccounts();

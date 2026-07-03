@@ -6,6 +6,7 @@ the content is still fine")."""
 import re
 
 from app import config
+from tests.scenarios.harness import TEST_CUSTOMER_NAME
 
 _SENTENCE_BOUNDARY = re.compile(r"(?<!\d)[.!?](?!\d)(?:\s+|$)")
 _AFFIRMATIVE_MARKERS = ("yes", "yeah", "yep", "sure", "sounds good", "that works", "okay", "ok", "correct", "that's right")
@@ -15,7 +16,7 @@ _AFFIRMATIVE_MARKERS = ("yes", "yeah", "yep", "sure", "sounds good", "that works
 # greeting is a fixed string spoken with no LLM round-trip at all, and rule 1
 # explicitly requires the Mini-Miranda disclosure be spoken verbatim as one
 # turn even though the disclosure itself is two sentences.
-_RULE_7_EXEMPT_TURNS = (config.GREETING_IDENTITY_CHECK, config.MINI_MIRANDA_DISCLOSURE)
+_RULE_7_EXEMPT_TURNS = (config.build_greeting(TEST_CUSTOMER_NAME), config.MINI_MIRANDA_DISCLOSURE)
 
 
 def one_sentence_per_turn(transcript: list[str]) -> list[str]:

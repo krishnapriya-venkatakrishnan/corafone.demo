@@ -10,6 +10,43 @@ from app.main import app
 client = TestClient(app)
 
 
+def test_accounts_returns_list(patched_db_pool):
+    patched_db_pool.fetch.return_value = [
+        {"account_id": 1, "customer_name": "Marcus Vance", "phone_number": "+15550199",
+         "current_balance": 500.0, "status": "ACTIVE"},
+        {"account_id": 2, "customer_name": "Dana Whitfield", "phone_number": "+15550102",
+         "current_balance": 1450.0, "status": "ACTIVE"},
+    ]
+
+    response = client.get("/api/dashboard/accounts")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 2
+    assert body[1]["customer_name"] == "Dana Whitfield"
+
+
+def test_summary_with_account_id_uses_get_account_by_id(patched_db_pool):
+    patched_db_pool.fetchrow.side_effect = [
+        {
+            "account_id": 2, "customer_name": "Dana Whitfield", "phone_number": "+15550102",
+            "current_balance": 1450.0, "status": "ACTIVE",
+        },
+        {
+            "total_calls": 1, "mini_miranda_pass_rate": 1.0, "avg_tone_score": 5.0,
+            "hallucination_count": 0, "prohibited_conduct_count": 0, "total_judge_cost_usd": 0.005,
+        },
+    ]
+
+    response = client.get("/api/dashboard/summary?account_id=2")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["account"]["customer_name"] == "Dana Whitfield"
+    query = patched_db_pool.fetchrow.call_args_list[0].args[0]
+    assert "WHERE account_id = $1" in query
+
+
 def test_summary_returns_account_and_compliance(patched_db_pool):
     patched_db_pool.fetchrow.side_effect = [
         {

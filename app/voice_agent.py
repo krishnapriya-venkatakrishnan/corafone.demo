@@ -131,9 +131,9 @@ async def initialize_agent_connection(session: CallSession) -> None:
                 ),
                 think=ThinkSettingsV1(
                     provider={"type": "open_ai", "model": config.OPENAI_MODEL},
-                    prompt=config.build_system_prompt(),
+                    prompt=config.build_system_prompt(session.customer_name, session.account_balance),
                     functions=[
-                        config.SETTLEMENT_FUNCTION_SCHEMA,
+                        config.build_settlement_function_schema(session.account_balance),
                         config.SCHEDULE_CALLBACK_FUNCTION_SCHEMA,
                         config.OFFER_PAYMENT_PLAN_FUNCTION_SCHEMA,
                     ],
@@ -142,7 +142,7 @@ async def initialize_agent_connection(session: CallSession) -> None:
                     provider={"type": "deepgram", "model": config.DEEPGRAM_TTS_MODEL}
                 ),
                 # Identity check only -- see SYSTEM_PROMPT rule 1.
-                greeting=config.GREETING_IDENTITY_CHECK,
+                greeting=config.build_greeting(session.customer_name),
             ),
         )
     )

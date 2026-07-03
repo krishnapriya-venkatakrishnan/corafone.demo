@@ -4,27 +4,7 @@ Postgres involved."""
 
 from datetime import date, datetime
 
-import pytest
-
 from app import db
-
-
-async def test_get_account_id_by_phone_returns_id(patched_db_pool):
-    patched_db_pool.fetchrow.return_value = {"account_id": 42}
-
-    account_id = await db.get_account_id_by_phone("+15550199")
-
-    assert account_id == 42
-    patched_db_pool.fetchrow.assert_awaited_once_with(
-        "SELECT account_id FROM accounts WHERE phone_number = $1", "+15550199"
-    )
-
-
-async def test_get_account_id_by_phone_raises_when_not_found(patched_db_pool):
-    patched_db_pool.fetchrow.return_value = None
-
-    with pytest.raises(ValueError):
-        await db.get_account_id_by_phone("+10000000")
 
 
 async def test_apply_settlement(patched_db_pool, mock_db_conn):
@@ -107,6 +87,32 @@ async def test_get_account_returns_dict(patched_db_pool):
     account = await db.get_account("+15550199")
     assert account["account_id"] == 42
     assert account["customer_name"] == "Marcus Vance"
+
+
+async def test_get_account_by_id_returns_dict(patched_db_pool):
+    patched_db_pool.fetchrow.return_value = {
+        "account_id": 42, "customer_name": "Marcus Vance", "phone_number": "+15550199",
+        "current_balance": 500.0, "status": "ACTIVE",
+    }
+    account = await db.get_account_by_id(42)
+    assert account["account_id"] == 42
+    patched_db_pool.fetchrow.assert_awaited_once_with(
+        "SELECT account_id, customer_name, phone_number, current_balance, status "
+        "FROM accounts WHERE account_id = $1",
+        42,
+    )
+
+
+async def test_get_accounts_returns_all(patched_db_pool):
+    patched_db_pool.fetch.return_value = [
+        {"account_id": 1, "customer_name": "Marcus Vance", "phone_number": "+15550199",
+         "current_balance": 500.0, "status": "ACTIVE"},
+        {"account_id": 2, "customer_name": "Dana Whitfield", "phone_number": "+15550102",
+         "current_balance": 1450.0, "status": "ACTIVE"},
+    ]
+    accounts = await db.get_accounts()
+    assert len(accounts) == 2
+    assert accounts[0]["customer_name"] == "Marcus Vance"
 
 
 async def test_get_compliance_summary(patched_db_pool):

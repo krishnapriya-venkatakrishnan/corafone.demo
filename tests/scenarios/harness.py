@@ -19,6 +19,12 @@ openai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 _END_PHRASES = ("bye", "goodbye", "have a good day", "talk soon")
 _MAX_TOOL_CALLS_PER_TURN = 5  # safety cap, not a realistic expectation
 
+# Pinned fixture identity/balance -- account context is per-call in the live
+# system (app/main.py resolves it from Supabase), but Layer 3 needs a fixed,
+# deterministic account regardless of whatever's seeded live.
+TEST_CUSTOMER_NAME = "Marcus Vance"
+TEST_ACCOUNT_BALANCE = 500.00
+
 
 def _to_openai_tool(flat_schema: dict) -> dict:
     """config.py's tool schemas are Deepgram's flat shape ({name, description,
@@ -35,7 +41,7 @@ def _to_openai_tool(flat_schema: dict) -> dict:
 
 
 _TOOLS = [
-    _to_openai_tool(config.SETTLEMENT_FUNCTION_SCHEMA),
+    _to_openai_tool(config.build_settlement_function_schema(TEST_ACCOUNT_BALANCE)),
     _to_openai_tool(config.SCHEDULE_CALLBACK_FUNCTION_SCHEMA),
     _to_openai_tool(config.OFFER_PAYMENT_PLAN_FUNCTION_SCHEMA),
 ]
@@ -107,11 +113,11 @@ async def run_conversation(
     for that, matching the live system), then alternates customer/Cora turns
     until a natural end or `max_turns` is reached."""
     result = ConversationResult()
-    greeting = config.GREETING_IDENTITY_CHECK
+    greeting = config.build_greeting(TEST_CUSTOMER_NAME)
     result.transcript.append(f"assistant: {greeting}")
 
     collector_messages = [
-        {"role": "system", "content": config.build_system_prompt()},
+        {"role": "system", "content": config.build_system_prompt(TEST_CUSTOMER_NAME, TEST_ACCOUNT_BALANCE)},
         {"role": "assistant", "content": greeting},
     ]
     consumer_view = [{"role": "assistant", "content": greeting}]

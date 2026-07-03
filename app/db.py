@@ -26,17 +26,6 @@ async def close_pool() -> None:
         logger.info("Supabase connection pool closed.")
 
 
-async def get_account_id_by_phone(phone_number: str) -> int:
-    """Resolves the demo account once per call. Not LLM-supplied -- see
-    app/tools.py for why account identity is always server-resolved."""
-    row = await _pool.fetchrow(
-        "SELECT account_id FROM accounts WHERE phone_number = $1", phone_number
-    )
-    if row is None:
-        raise ValueError(f"No account found for phone number {phone_number!r}.")
-    return row["account_id"]
-
-
 async def apply_settlement(account_id: int) -> None:
     async with _pool.acquire() as conn:
         await conn.execute(
@@ -168,23 +157,45 @@ async def get_account(phone_number: str) -> dict | None:
     return dict(row) if row else None
 
 
-async def get_compliance_summary() -> dict:
+async def get_account_by_id(account_id: int) -> dict | None:
+    row = await _pool.fetchrow(
+        "SELECT account_id, customer_name, phone_number, current_balance, status "
+        "FROM accounts WHERE account_id = $1",
+        account_id,
+    )
+    return dict(row) if row else None
+
+
+async def get_accounts() -> list[dict]:
+    """All demo accounts, for the account picker (frontend/ voice demo and
+    the dashboard's account switcher)."""
+    rows = await _pool.fetch(
+        "SELECT account_id, customer_name, phone_number, current_balance, status "
+        "FROM accounts ORDER BY account_id"
+    )
+    return [dict(row) for row in rows]
+
+
+async def get_compliance_summary(account_id: int | None = None) -> dict:
     row = await _pool.fetchrow(
         """
         SELECT
             COUNT(*) AS total_calls,
-            AVG(CASE WHEN mini_miranda_passed THEN 1.0 ELSE 0.0 END) AS mini_miranda_pass_rate,
-            AVG(tone_score) AS avg_tone_score,
-            SUM(CASE WHEN hallucination_detected THEN 1 ELSE 0 END) AS hallucination_count,
-            SUM(CASE WHEN prohibited_conduct_detected THEN 1 ELSE 0 END) AS prohibited_conduct_count,
-            SUM(judge_cost_usd) AS total_judge_cost_usd
-        FROM ai_evaluation_logs
-        """
+            AVG(CASE WHEN ael.mini_miranda_passed THEN 1.0 ELSE 0.0 END) AS mini_miranda_pass_rate,
+            AVG(ael.tone_score) AS avg_tone_score,
+            SUM(CASE WHEN ael.hallucination_detected THEN 1 ELSE 0 END) AS hallucination_count,
+            SUM(CASE WHEN ael.prohibited_conduct_detected THEN 1 ELSE 0 END) AS prohibited_conduct_count,
+            SUM(ael.judge_cost_usd) AS total_judge_cost_usd
+        FROM ai_evaluation_logs ael
+        JOIN voice_session_metrics vsm ON vsm.session_id = ael.session_id
+        WHERE $1::int IS NULL OR vsm.account_id = $1
+        """,
+        account_id,
     )
     return dict(row)
 
 
-async def get_calls() -> list[dict]:
+async def get_calls(account_id: int | None = None) -> list[dict]:
     """Call history: voice_session_metrics left-joined to ai_evaluation_logs
     (the audit runs in the background, so it may not have landed yet -- or
     may have failed -- for the most recent call)."""
@@ -199,25 +210,32 @@ async def get_calls() -> list[dict]:
             ael.right_to_cease_honored, ael.tone_score, ael.judge_reasoning, ael.judge_cost_usd
         FROM voice_session_metrics vsm
         LEFT JOIN ai_evaluation_logs ael ON ael.session_id = vsm.session_id
+        WHERE $1::int IS NULL OR vsm.account_id = $1
         ORDER BY vsm.created_at DESC
-        """
+        """,
+        account_id,
     )
     return [dict(row) for row in rows]
 
 
-async def get_active_payment_plans() -> list[dict]:
+async def get_active_payment_plans(account_id: int | None = None) -> list[dict]:
     rows = await _pool.fetch(
         "SELECT plan_id, account_id, num_installments, amount_per_installment, total_amount, "
-        "start_date, status, created_at FROM payment_plans WHERE status = 'ACTIVE' "
-        "ORDER BY start_date ASC"
+        "start_date, status, created_at FROM payment_plans "
+        "WHERE status = 'ACTIVE' AND ($1::int IS NULL OR account_id = $1) "
+        "ORDER BY start_date ASC",
+        account_id,
     )
     return [dict(row) for row in rows]
 
 
-async def get_pending_callbacks() -> list[dict]:
+async def get_pending_callbacks(account_id: int | None = None) -> list[dict]:
     rows = await _pool.fetch(
         "SELECT callback_id, account_id, callback_time, status, created_at "
-        "FROM scheduled_callbacks WHERE status = 'PENDING' ORDER BY callback_time ASC"
+        "FROM scheduled_callbacks "
+        "WHERE status = 'PENDING' AND ($1::int IS NULL OR account_id = $1) "
+        "ORDER BY callback_time ASC",
+        account_id,
     )
     return [dict(row) for row in rows]
 

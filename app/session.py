@@ -23,6 +23,8 @@ class CallSession:
     # Resolved once at call start (app/db.py), the real Supabase account this
     # call is for -- never taken from the LLM (see app/tools.py for why).
     account_id: int | None = None
+    customer_name: str | None = None
+    account_balance: float | None = None
 
     # Settlement idempotency guard (only charge once per call).
     settlement_lock: asyncio.Lock = field(default_factory=asyncio.Lock)

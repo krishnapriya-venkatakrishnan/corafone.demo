@@ -82,7 +82,18 @@ async def handle_audio_stream(websocket: WebSocket) -> None:
     session = CallSession(websocket=websocket)
 
     try:
-        session.account_id = await db.get_account_id_by_phone(config.CUSTOMER_PHONE_NUMBER)
+        phone_number = websocket.query_params.get("phone_number", config.DEFAULT_CUSTOMER_PHONE_NUMBER)
+        account = await db.get_account(phone_number)
+        if account is None:
+            logger.error("No account found for phone number %r -- closing.", phone_number)
+            await websocket.send_text(json.dumps({"type": "error", "message": "Unknown account."}))
+            await websocket.close()
+            return
+
+        session.account_id = account["account_id"]
+        session.customer_name = account["customer_name"]
+        session.account_balance = float(account["current_balance"])
+
         await initialize_agent_connection(session)
         logger.info("Awaiting incoming browser microphone stream packets...")
 

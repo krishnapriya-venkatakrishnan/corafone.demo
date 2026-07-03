@@ -37,7 +37,10 @@ APP_TITLE = "Corafone Voice Gateway"
 WS_ROUTE_PATH = "/ws/stream"
 
 # --- Dashboard (app/dashboard_api.py) ---
-DASHBOARD_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]  # Vite dev server
+DASHBOARD_ORIGINS = [
+    "http://localhost:5173", "http://127.0.0.1:5173",  # Vite dev server (dashboard/)
+    "http://localhost:8080", "http://127.0.0.1:8080",  # frontend/'s python -m http.server
+]
 
 # --- Models ---
 OPENAI_MODEL = "gpt-4o-mini"  # LLM used for reasoning (via Deepgram's think.provider)
@@ -62,13 +65,11 @@ MOCK_LEDGER_LATENCY_SECONDS = 0.8      # settlement / payment plan
 MOCK_SCHEDULING_LATENCY_SECONDS = 0.3  # callback scheduling
 
 # --- Collections agent business rules ---
-CUSTOMER_NAME = "Marcus Vance"
-CUSTOMER_PHONE_NUMBER = "+15550199"  # looked up in Supabase at call start (app/db.py)
-ACCOUNT_BALANCE = 500.00
+# Per-account identity/balance is resolved from the DB per call (see
+# app/main.py + app/db.py's get_account) -- only genuinely global business
+# rules live here as module constants.
+DEFAULT_CUSTOMER_PHONE_NUMBER = "+15550199"  # used when a call connects with no ?phone_number= param
 MAX_SETTLEMENT_DISCOUNT_PERCENT = 40
-MINIMUM_SETTLEMENT_AMOUNT = round(
-    ACCOUNT_BALANCE * (1 - MAX_SETTLEMENT_DISCOUNT_PERCENT / 100), 2
-)
 
 MIN_INSTALLMENTS = 2  # payment plans cover the full balance, no discount
 MAX_INSTALLMENTS = 6
@@ -78,49 +79,58 @@ MINI_MIRANDA_DISCLOSURE = (
     "Any information obtained will be used for that purpose."
 )
 
-# Fixed opening line (spoken instantly, no LLM round-trip). Identity-check
-# only -- no debt disclosure until confirmed speaking with the right person.
-GREETING_IDENTITY_CHECK = f"Hello, this is Cora calling from Corafone Financial. May I please speak with {CUSTOMER_NAME}?"
 
-def build_system_prompt() -> str:
+def minimum_settlement_amount(account_balance: float) -> float:
+    return round(account_balance * (1 - MAX_SETTLEMENT_DISCOUNT_PERCENT / 100), 2)
+
+
+def build_greeting(customer_name: str) -> str:
+    """Fixed opening line (spoken instantly, no LLM round-trip). Identity-check
+    only -- no debt disclosure until confirmed speaking with the right person."""
+    return f"Hello, this is Cora calling from Corafone Financial. May I please speak with {customer_name}?"
+
+
+def build_system_prompt(customer_name: str, account_balance: float) -> str:
     """Rebuilt per call (not a static module-level string) so `today` never
-    goes stale on a long-running server."""
+    goes stale on a long-running server, and so identity/balance reflect
+    whichever account this call is for."""
     today = date.today().isoformat()
+    minimum_settlement = minimum_settlement_amount(account_balance)
     return f"""You are Cora, an automated outbound voice collection agent for Corafone Financial.
 Your tone must remain highly professional, warm, and genuinely empathetic -- never pushy or forceful.
 Today's date is {today}.
 
 CRITICAL RULES:
 1. IDENTITY VERIFICATION (must happen before any debt disclosure): your opening
-   greeting has already asked to speak with {CUSTOMER_NAME}, without stating why
+   greeting has already asked to speak with {customer_name}, without stating why
    you're calling. On your very first turn, react to how the person responded:
-   - If they confirm they ARE {CUSTOMER_NAME} (e.g. "speaking", "yes, that's me"),
+   - If they confirm they ARE {customer_name} (e.g. "speaking", "yes, that's me"),
      state the mandatory legal disclosure now, verbatim, as your entire turn:
      "{MINI_MIRANDA_DISCLOSURE}" Continue the collections conversation naturally
      after that.
-   - If they indicate they are NOT {CUSTOMER_NAME} (wrong number, "he's not
+   - If they indicate they are NOT {customer_name} (wrong number, "he's not
      here", someone else answered), you MUST NOT reveal that this is a debt
      collection call, the balance, or any other account detail. Only ask when
-     {CUSTOMER_NAME} might be reachable, or ask them to have him call back,
+     {customer_name} might be reachable, or ask them to have him call back,
      then end the call politely.
-   - If it's unclear whether you're speaking with {CUSTOMER_NAME}, ask again
+   - If it's unclear whether you're speaking with {customer_name}, ask again
      before disclosing anything.
-2. The customer, {CUSTOMER_NAME}, owes a balance of ${ACCOUNT_BALANCE:.2f}.
+2. The customer, {customer_name}, owes a balance of ${account_balance:.2f}.
 3. Offer BOTH of these as genuine options once discussing the balance -- do not
    favor or push one over the other -- and then explicitly ask the customer
    which they'd prefer (e.g. "Would you like to settle today, set up a payment
    plan, or would another time work better for a callback?"). Don't just
    describe the options and wait; actively invite a decision.
    a. A one-time settlement discount up to {MAX_SETTLEMENT_DISCOUNT_PERCENT}%
-      (${MINIMUM_SETTLEMENT_AMOUNT:.2f} minimum total) if paid today.
-   b. An installment plan covering the full ${ACCOUNT_BALANCE:.2f} balance over
+      (${minimum_settlement:.2f} minimum total) if paid today.
+   b. An installment plan covering the full ${account_balance:.2f} balance over
       {MIN_INSTALLMENTS}-{MAX_INSTALLMENTS} monthly payments, for customers who
       can't pay a lump sum today. If they choose this, also agree on WHEN the
       first payment is due before calling the tool (rule 4).
 4. CONFIRM BEFORE ACTING: never call `process_account_settlement`,
    `offer_payment_plan`, or `schedule_callback` on inferred or ambiguous
    agreement. First restate the exact terms in plain language and ask a direct
-   yes/no question -- e.g. "So to confirm, you agree to pay ${MINIMUM_SETTLEMENT_AMOUNT:.2f}
+   yes/no question -- e.g. "So to confirm, you agree to pay ${minimum_settlement:.2f}
    today to settle this -- is that right?", or "Just to confirm, that's N monthly
    payments of $X each, starting [date] -- does that work for you?" (using the
    actual agreed numbers and date, not literally N and X), or "So I'll call you
@@ -155,20 +165,22 @@ CRITICAL RULES:
 # OpenAI's nested {"type": "function", "function": {...}}). No `endpoint`
 # field -- Deepgram delivers these as client_side FunctionCallRequests that
 # app/tools.py executes locally.
-SETTLEMENT_FUNCTION_SCHEMA = {
-    "name": "process_account_settlement",
-    "description": "Executes an immediate collection settlement deduction against the user account database balance.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "amount": {
-                "type": "number",
-                "description": f"The exact settlement dollar total agreed upon (minimum {MINIMUM_SETTLEMENT_AMOUNT:.2f}).",
+def build_settlement_function_schema(account_balance: float) -> dict:
+    minimum_settlement = minimum_settlement_amount(account_balance)
+    return {
+        "name": "process_account_settlement",
+        "description": "Executes an immediate collection settlement deduction against the user account database balance.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "amount": {
+                    "type": "number",
+                    "description": f"The exact settlement dollar total agreed upon (minimum {minimum_settlement:.2f}).",
+                },
             },
+            "required": ["amount"],
         },
-        "required": ["amount"],
-    },
-}
+    }
 
 SCHEDULE_CALLBACK_FUNCTION_SCHEMA = {
     "name": "schedule_callback",
