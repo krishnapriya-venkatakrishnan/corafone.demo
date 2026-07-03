@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { fetchAccounts, fetchCalls, fetchCommitments, fetchSummary } from "./api";
 import type { AccountSummary, CallRecord, Commitments, ComplianceSummary } from "./types";
 import AccountsTable from "./components/AccountsTable";
-import ComplianceRollup from "./components/ComplianceRollup";
+import CallModal from "./components/CallModal";
 import ScenarioRunner from "./components/ScenarioRunner";
 
 export default function App() {
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [expandedAccountId, setExpandedAccountId] = useState<number | null>(null);
+  const [callAccount, setCallAccount] = useState<AccountSummary | null>(null);
   const [compliance, setCompliance] = useState<ComplianceSummary | null>(null);
   const [detailCalls, setDetailCalls] = useState<CallRecord[]>([]);
   const [detailCommitments, setDetailCommitments] = useState<Commitments | null>(null);
@@ -34,18 +35,23 @@ export default function App() {
     }
   }
 
-  async function refresh() {
-    setLoading(true);
+  async function loadDashboardData() {
     try {
       const accountsData = await fetchAccounts();
       setAccounts(accountsData);
-      await loadComplianceFor(expandedAccountId);
       if (expandedAccountId !== null) {
-        await loadDetailFor(expandedAccountId);
+        await Promise.all([loadComplianceFor(expandedAccountId), loadDetailFor(expandedAccountId)]);
       }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load dashboard data.");
+    }
+  }
+
+  async function refresh() {
+    setLoading(true);
+    try {
+      await loadDashboardData();
     } finally {
       setLoading(false);
     }
@@ -59,16 +65,26 @@ export default function App() {
   async function handleToggleAccount(accountId: number) {
     const nextId = expandedAccountId === accountId ? null : accountId;
     setExpandedAccountId(nextId);
-    try {
-      await loadComplianceFor(nextId);
-      if (nextId !== null) await loadDetailFor(nextId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load account detail.");
+    setError(null);
+    // Clear immediately, before the new account's data arrives -- otherwise
+    // a slow or failed fetch leaves the previously-expanded account's calls/
+    // commitments visible under the newly-expanded row.
+    setDetailCalls([]);
+    setDetailCommitments(null);
+    setCompliance(null);
+
+    if (nextId === null) return;
+
+    // Independent requests: one failing (e.g. an account with no calls yet)
+    // shouldn't block the other from rendering.
+    const results = await Promise.allSettled([loadComplianceFor(nextId), loadDetailFor(nextId)]);
+    const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failure) {
+      setError(
+        failure.reason instanceof Error ? failure.reason.message : "Failed to load account detail."
+      );
     }
   }
-
-  const expandedAccount = accounts.find((a) => a.account_id === expandedAccountId) ?? null;
-  const scopeLabel = expandedAccount ? expandedAccount.customer_name : "All accounts";
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans antialiased">
@@ -104,17 +120,29 @@ export default function App() {
               accounts={accounts}
               expandedAccountId={expandedAccountId}
               onToggleAccount={handleToggleAccount}
+              onCall={setCallAccount}
               loadingDetail={loadingDetail}
+              detailCompliance={compliance}
               detailCalls={detailCalls}
               detailCommitments={detailCommitments}
             />
-
-            <ComplianceRollup compliance={compliance} scopeLabel={scopeLabel} />
 
             <ScenarioRunner />
           </>
         )}
       </div>
+
+      {callAccount && (
+        <CallModal
+          account={callAccount}
+          onClose={() => {
+            setCallAccount(null);
+            // Refresh in place (no full-page "Loading…" flash) so the just-
+            // finished call's data (balance/status/history) shows immediately.
+            loadDashboardData();
+          }}
+        />
+      )}
     </div>
   );
 }

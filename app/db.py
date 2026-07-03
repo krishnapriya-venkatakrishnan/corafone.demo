@@ -183,8 +183,8 @@ async def get_compliance_summary(account_id: int | None = None) -> dict:
             COUNT(*) AS total_calls,
             AVG(CASE WHEN ael.mini_miranda_passed THEN 1.0 ELSE 0.0 END) AS mini_miranda_pass_rate,
             AVG(ael.tone_score) AS avg_tone_score,
-            SUM(CASE WHEN ael.hallucination_detected THEN 1 ELSE 0 END) AS hallucination_count,
-            SUM(CASE WHEN ael.prohibited_conduct_detected THEN 1 ELSE 0 END) AS prohibited_conduct_count,
+            COALESCE(SUM(CASE WHEN ael.hallucination_detected THEN 1 ELSE 0 END), 0) AS hallucination_count,
+            COALESCE(SUM(CASE WHEN ael.prohibited_conduct_detected THEN 1 ELSE 0 END), 0) AS prohibited_conduct_count,
             SUM(ael.judge_cost_usd) AS total_judge_cost_usd
         FROM ai_evaluation_logs ael
         JOIN voice_session_metrics vsm ON vsm.session_id = ael.session_id

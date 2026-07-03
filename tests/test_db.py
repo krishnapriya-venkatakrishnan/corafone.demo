@@ -124,6 +124,12 @@ async def test_get_compliance_summary(patched_db_pool):
     assert summary["total_calls"] == 3
     query = patched_db_pool.fetchrow.call_args.args[0]
     assert "FROM ai_evaluation_logs" in query
+    # hallucination_count/prohibited_conduct_count must be COALESCEd to 0 --
+    # a bare SUM() over zero matching rows (an account with no calls yet)
+    # returns SQL NULL, which fails ComplianceSummary's non-optional int
+    # validation and 500s the endpoint.
+    assert "COALESCE(SUM(CASE WHEN ael.hallucination_detected" in query
+    assert "COALESCE(SUM(CASE WHEN ael.prohibited_conduct_detected" in query
 
 
 async def test_get_calls_joins_metrics_and_evaluation(patched_db_pool):

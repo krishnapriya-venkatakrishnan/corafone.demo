@@ -66,7 +66,7 @@ export default function ScenarioRunner() {
       )}
 
       {results.length === 0 && !running && (
-        <p className="text-sm text-neutral-600">No results yet -- click Run Scenarios.</p>
+        <p className="text-xs text-neutral-600 text-center">No results yet -- click Run Scenarios.</p>
       )}
 
       <ul className="space-y-2">

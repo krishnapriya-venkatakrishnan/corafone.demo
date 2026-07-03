@@ -22,6 +22,7 @@ const STATUS_BADGE_STYLES = {
 };
 
 // --- DOM references ---
+const accountPickerSection = document.getElementById("accountPickerSection");
 const accountRow = document.getElementById("accountRow");
 const micButton = document.getElementById("micButton");
 const micIcon = document.getElementById("micIcon");
@@ -99,7 +100,20 @@ const CALL_ICON_PATH = `
   <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"></path>
 `;
 
+// Deep-linked from the dashboard's call icon (?phone_number=...) -- this is
+// a focused single-account view, not the standalone account picker (the
+// modal embedding this already shows who's being called).
+const deepLinkPhoneNumber = new URLSearchParams(window.location.search).get("phone_number");
+
 async function loadAccounts() {
+  if (deepLinkPhoneNumber) {
+    // Skip fetching every account -- the dashboard already told us exactly
+    // who we're calling, and showing the full account list here would be
+    // confusing (and leak other accounts' details) inside the call modal.
+    renderDeepLinkTarget();
+    return;
+  }
+
   try {
     const response = await fetch(`${API_BASE}/api/dashboard/accounts`);
     if (!response.ok) throw new Error(`accounts fetch failed: ${response.status}`);
@@ -108,6 +122,16 @@ async function loadAccounts() {
   } catch (err) {
     console.error("Failed to load accounts:", err);
     accountRow.innerHTML = `<p class="text-xs text-red-400 text-center py-2">Couldn't load accounts. Is the backend running?</p>`;
+  }
+}
+
+function renderDeepLinkTarget() {
+  // The embedding call modal's own header already shows who's being called --
+  // no need to repeat it (or a "pick an account" prompt that no longer applies).
+  accountPickerSection.classList.add("hidden");
+  if (callState === "disconnected") {
+    selectedPhoneNumber = deepLinkPhoneNumber;
+    startCall();
   }
 }
 
@@ -121,7 +145,7 @@ function renderAccounts(accounts) {
   for (const account of accounts) {
     const card = document.createElement("div");
     card.className =
-      "w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-800";
+      "w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-neutral-900 border border-neutral-800 transition-colors";
 
     const badgeStyle = STATUS_BADGE_STYLES[account.status] ?? STATUS_BADGE_STYLES.ACTIVE;
     card.innerHTML = `
@@ -542,6 +566,20 @@ micButton.addEventListener("click", () => {
 window.addEventListener("beforeunload", () => {
   if (callState !== "disconnected") endCall();
 });
+
+// A deep-linked auto-start (see renderAccounts) isn't inside a click handler
+// on *this* page, so Chrome's autoplay policy may leave playbackContext
+// suspended with no audible greeting -- resume it on the first interaction
+// the user makes with this page, whatever it is.
+document.addEventListener(
+  "pointerdown",
+  () => {
+    if (playbackContext && playbackContext.state === "suspended") {
+      playbackContext.resume().catch(() => {});
+    }
+  },
+  { once: true }
+);
 
 setStatus("disconnected");
 loadAccounts();

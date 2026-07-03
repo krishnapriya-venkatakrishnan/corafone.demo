@@ -9,6 +9,11 @@ import type {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
+// The voice demo (frontend/), a separate app -- this dashboard is read-only
+// and never talks to Deepgram/the mic directly; the call modal embeds it
+// via an iframe instead (see components/CallModal.tsx).
+export const FRONTEND_BASE = import.meta.env.VITE_FRONTEND_BASE ?? "http://localhost:8080";
+
 async function getJSON<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`);
   if (!response.ok) {
