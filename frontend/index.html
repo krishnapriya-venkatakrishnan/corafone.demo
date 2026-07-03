@@ -300,7 +300,17 @@ async function startMicCapture() {
   });
 
   // AudioContext must be created after a user gesture (the connect click).
-  audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  // Some browsers accept a sampleRate hint on construction and some throw on
+  // an unsupported one, so try the 8000Hz hint first and fall back to the
+  // device default; downsampleFloat32To8kInt16() adapts to whatever rate we
+  // actually end up with either way.
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  try {
+    audioContext = new AudioContextCtor({ sampleRate: TARGET_SAMPLE_RATE });
+  } catch (err) {
+    console.warn("8000Hz AudioContext hint rejected, falling back to device default:", err);
+    audioContext = new AudioContextCtor();
+  }
   const nativeSampleRate = audioContext.sampleRate; // typically 44100 or 48000
 
   sourceNode = audioContext.createMediaStreamSource(micStream);
@@ -344,6 +354,10 @@ async function startMicCapture() {
   // Flush accumulated audio to the socket on a fixed interval rather than
   // per-callback, so we send fewer, larger, steadier binary frames.
   uploadTimerId = setInterval(flushUploadBuffer, UPLOAD_INTERVAL_MS);
+
+  console.log(
+    `Streaming audio at ${TARGET_SAMPLE_RATE}Hz Int16 (mic native rate: ${nativeSampleRate}Hz, worklet: ${usingWorklet})`
+  );
 }
 
 function queueForUpload(int16Chunk) {

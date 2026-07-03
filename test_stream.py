@@ -1,4 +1,5 @@
 import asyncio
+import json
 import websockets
 
 
@@ -7,37 +8,40 @@ async def receive_audio_responses(websocket):
     try:
         async for message in websocket:
             if isinstance(message, bytes):
-                print(
-                    f"[Client] Received {len(message)} audio bytes back from Cora's voice engine!"
-                )
+                print(f"[Client] Received {len(message)} audio voice bytes from Cora.")
     except websockets.exceptions.ConnectionClosed:
         pass
 
 
 async def test_voice_pipeline():
     uri = "ws://127.0.0.1:8000/ws/stream"
-    print("Attempting connection to local voice gateway...")
+    print("Attempting connection to local agentic voice gateway...")
 
     try:
         async with websockets.connect(uri) as websocket:
-            print(
-                "Connected to gateway. Beginning live bidirectional streaming simulation..."
-            )
-
-            # Start a background task to constantly listen for Cora speaking back to us
+            print("Connected. Running simulation...")
             listener_task = asyncio.create_task(receive_audio_responses(websocket))
 
-            # Stream mock user audio frames for 10 seconds
-            for second in range(10):
-                mock_audio_pcm_chunk = bytes([0x55, 0xAA] * 8000)
-                await websocket.send(mock_audio_pcm_chunk)
-                await asyncio.sleep(1)
-                print(f"Streamed user audio block frame: {second + 1}/10 seconds sent.")
+            # Wait 4 seconds for Cora to finish greeting us
+            await asyncio.sleep(4)
 
             print(
-                "Finished sending user telemetry data. Waiting briefly for trailing audio..."
+                "\n[Simulation Trigger] Injecting mock text payload into gateway: 'I accept the $300 settlement. Go ahead and charge it.'"
             )
-            await asyncio.sleep(2)
+
+            # Formulate an explicit structural payload to force the backend OpenAI route to process the statement
+            # In a live setup, the server's on_message hook appends this string directly when Deepgram triggers.
+            # We send a tiny text trigger packet to simulate that transcription completion.
+            trigger_packet = {
+                "type": "mock_transcript",
+                "text": "I accept the $300 settlement. Go ahead and charge it.",
+            }
+            await websocket.send(json.dumps(trigger_packet))
+
+            # CRITICAL: Sleep here to keep the connection alive to listen to Cora's execution reply!
+            await asyncio.sleep(6)
+
+            print("\nSimulation run completed successfully.")
             listener_task.cancel()
 
     except Exception as e:

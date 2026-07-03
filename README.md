@@ -1,14 +1,14 @@
 # Corafone Voice Gateway
 
-The Corafone automated voice engine, built up in phases. Phase 1 laid the data foundation (Supabase schema + an offline multi-agent simulation sandbox). Phase 2 added the live, real-time streaming core of the gateway. Phase 3 gave that gateway its conversational intelligence. Phase 4 closed the loop with real-time synthesized audio replies. Phase 5 gives the gateway a real, in-browser client to talk to.
+The Corafone automated voice engine, built up in phases. Phase 1 laid the data foundation (Supabase schema + an offline multi-agent simulation sandbox). Phase 2 added the live, real-time streaming core of the gateway. Phase 3 gave that gateway its conversational intelligence. Phase 4 closed the loop with real-time synthesized audio replies. Phase 5 gave the gateway a real, in-browser client to talk to. Phase 6 turns Cora from a reactive chatbot into an agent that can take real actions — settling an account balance — via OpenAI function calling.
 
 ## Project Structure
 
-* `app/main.py` - The live web server core. Exposes a JSON health check endpoint and a persistent, bidirectional binary WebSocket pipeline (`/ws/stream`): incoming audio streams into Deepgram for transcription, finalized transcripts drive a non-blocking OpenAI GPT-4o chat loop, and the streamed reply text is chunked clause-by-clause into Deepgram Aura TTS, with the resulting audio bytes written straight back down the same socket.
+* `app/main.py` - The live web server core. Exposes a JSON health check endpoint and a persistent, bidirectional WebSocket pipeline (`/ws/stream`): incoming audio lazily opens a Deepgram connection on the first captured byte, whose `start_listening()` loop is run as a background task so finalized transcripts actually reach the app (registering `.on(EventType.MESSAGE, ...)` alone does not pump the socket). Finalized transcripts drive a non-blocking OpenAI GPT-4o chat loop bound to a `process_account_settlement` function-calling tool, guarded by a per-call lock/flag so only the first turn to reach it can ever charge the account — later or overlapping turns are told it's already settled instead of double-charging. The resulting reply text (or post-tool-call confirmation) is piped to Deepgram Aura TTS, with the resulting audio bytes written straight back down the same socket. The socket loop also accepts `mock_transcript` text frames alongside binary audio, so transcript-triggered flows can be exercised without a live mic.
 * `app/simulation.py` - The offline sandbox script. Runs an automated turn-by-turn conversation between an AI Collector persona and an adversarial AI Consumer persona, passes the transcript to a GPT-4o auditing judge, and logs the structured metrics straight to Supabase.
 * `app/database/script.sql` - Schema definitions and seed data for the Supabase tables (accounts, communication logs, session metrics, and AI evaluation logs).
-* `index.html` - The Corafone Voice UI. A self-contained browser client (vanilla JS + inline Tailwind CSS) that captures microphone audio, downsamples it to 8000Hz mono PCM16, and streams it to `/ws/stream`, while playing back the agent's synthesized voice gaplessly through the Web Audio API. See [Phase 5: Browser Voice Client](#phase-5-browser-voice-client) below.
-* `test_stream.py` - A localized client automation script used to simulate live network traffic. It streams mock PCM audio up to the server while a concurrent background task listens for and prints the synthesized audio bytes streaming back down.
+* `frontend/index.html` - The Corafone Voice UI. A self-contained browser client (vanilla JS + inline Tailwind CSS) that captures microphone audio, downsamples it to 8000Hz mono PCM16, and streams it to `/ws/stream`, while playing back the agent's synthesized voice gaplessly through the Web Audio API. See [Phase 5: Browser Voice Client](#phase-5-browser-voice-client) below.
+* `test_stream.py` - A localized client automation script used to simulate live network traffic. A background task listens for and prints synthesized audio bytes streaming back down while the script waits for Cora's greeting, then injects a `mock_transcript` text frame ("I accept the $300 settlement. Go ahead and charge it.") to exercise the agentic settlement tool-call path end-to-end.
 * `.env` - Local environment configuration file holding API credentials and connection strings (excluded from Git).
 
 ## Local Setup & Installation
@@ -297,7 +297,7 @@ INFO:     connection closed
 
 ## Phase 5: Browser Voice Client
 
-With the audio gateway able to carry raw PCM in both directions, Phase 5 gives it a real client to talk to. [`index.html`](index.html) — the **Corafone Voice UI** — replaces `test_stream.py` as the actual client a person talks to. It's a single, self-contained file (vanilla JS + inline Tailwind CSS, no build step, no framework) that turns a browser tab into a live call with Cora using nothing but the Web Audio API and a raw binary WebSocket.
+With the audio gateway able to carry raw PCM in both directions, Phase 5 gives it a real client to talk to. [`frontend/index.html`](frontend/index.html) — the **Corafone Voice UI** — replaces `test_stream.py` as the actual client a person talks to. It's a single, self-contained file (vanilla JS + inline Tailwind CSS, no build step, no framework) that turns a browser tab into a live call with Cora using nothing but the Web Audio API and a raw binary WebSocket.
 
 ### UI
 
@@ -305,7 +305,7 @@ A minimalist, dark call screen: a central mic button that toggles connect/discon
 
 ### Capturing and Uploading Microphone Audio
 
-1. `navigator.mediaDevices.getUserMedia` captures a mono mic stream (with echo cancellation, noise suppression, and AGC enabled). The `AudioContext` is deliberately constructed only after the user clicks the mic button, respecting the browser's user-gesture requirement for audio.
+1. `navigator.mediaDevices.getUserMedia` captures a mono mic stream (with echo cancellation, noise suppression, and AGC enabled). The `AudioContext` is deliberately constructed only after the user clicks the mic button, respecting the browser's user-gesture requirement for audio — it tries an 8000Hz `sampleRate` hint first and falls back to the device default if the browser rejects it, since the resampling step below adapts to whatever rate it actually gets. Once streaming starts, the browser console logs `Streaming audio at 8000Hz Int16` as a quick sanity check that capture is wired up correctly.
 2. An `AudioWorkletProcessor` — registered from an inline string via a `Blob` URL, so no second file is needed — runs on the dedicated audio render thread and forwards raw Float32 frames back to the main thread. A `ScriptProcessorNode` fallback covers browsers without `AudioWorklet` support.
 3. On the main thread, each frame is linearly resampled from the browser's native rate (typically 44.1kHz or 48kHz) down to exactly 8000Hz and quantized into an `Int16Array`, matching the gateway's expected wire format.
 4. Converted chunks are batched and flushed to the WebSocket roughly every 200ms as raw `ArrayBuffer`s (`socket.binaryType = 'arraybuffer'`) — no JSON envelope, no framing, just the same raw PCM16 bytes the gateway already expects from `test_stream.py`.
@@ -330,7 +330,82 @@ FastAPI /ws/stream ──────▶ WebSocket.onmessage(ArrayBuffer)
 With the gateway server active (`uvicorn app.main:app --reload`), serve the UI over `http://` rather than opening it as a `file://` URL, since `getUserMedia` requires a proper secure-context origin:
 
 ```bash
+cd frontend
 python3 -m http.server 8080
 ```
 
 Then open `http://127.0.0.1:8080/index.html` in a browser and click the mic button to start a live call.
+
+---
+
+## Phase 6: Agentic Tool Architecture
+
+Phase 6 marks the transition of Corafone from a reactive voice chatbot into a goal-driven agent that can take real actions on the customer's account. We extended the conversational loop with **OpenAI function (tool) calling**, bound directly into the same `/ws/stream` runtime used for transcription and TTS.
+
+Cora can now recognize when a customer has agreed to a settlement, pause conversational text generation, execute a deterministic backend action against a mock ledger, and resume speech to confirm the real-world outcome — instead of just claiming she processed something.
+
+### Technical Specifications & Agentic Design
+
+1. **Deterministic Execution via Function Calling:** LLM text generation is inherently non-deterministic, which is unacceptable for account balance changes. A rigid JSON schema (`SETTLEMENT_TOOL_SCHEMA`, requiring `account_id` and `amount`) is bound to the chat completion call via `tools=[...]` / `tool_choice="auto"`, so OpenAI must emit a structured tool call rather than free-form text when the customer agrees to pay.
+2. **Tool Execution & Recursive Confirmation:** When the model responds with a `tool_calls` payload, the server parses the arguments, awaits `process_account_settlement()` (a mock ledger update that simulates a Supabase + payment-gateway round trip), appends both the assistant's tool call and the tool's JSON result to conversation history as OpenAI's `tool` role, and immediately recurses back into `generate_agent_response()` so Cora's very next completion is grounded in the real transaction result rather than an assumption.
+3. **Discriminated WebSocket Frames:** The same `/ws/stream` socket now carries two distinct payload shapes on one connection — binary frames (`message["bytes"]`) are forwarded to Deepgram as live audio, while JSON text frames (`message["text"]`) are inspected for a `mock_transcript` envelope and routed straight into the agent loop as if Deepgram had finalized that transcript. This lets `test_stream.py` exercise the full tool-calling path without a live microphone.
+4. **Explicit Deepgram Listen Loop:** The Deepgram connection is opened lazily on the first captured audio byte (`channels=1, encoding="linear16", sample_rate=8000`), and `dg_connection.on(EventType.MESSAGE, on_message)` only *registers* a callback — nothing reads the Deepgram socket and actually emits that event until `dg_connection.start_listening()` is running. That call is spawned as its own `asyncio` task right after the handlers are registered, and cancelled in the `finally` block on disconnect. Without it, audio reaches Deepgram and gets transcribed fine, but the transcripts never make it back to the app.
+5. **Settlement Idempotency Guard:** Deepgram can finalize one spoken instruction (e.g. a sentence with a mid-utterance pause) as multiple separate transcripts, each of which independently spawns its own conversational turn via `asyncio.create_task`. If more than one of those turns decides to call the settlement tool, an `asyncio.Lock` around a per-call `settlement_state` flag ensures only the first one that reaches it actually executes `process_account_settlement()` — every other turn is told the account is already settled instead of charging it again.
+
+### Data Flow
+
+```
+[ Inbound Speech / mock_transcript ] ──► [ Deepgram STT / direct inject ] ──► [ Conversation History ]
+                                                                                       │
+                                                                                       ▼
+                                                                          [ OpenAI GPT-4o + Tool Schema ]
+                                                                                       │
+                                                                        tool_calls?  ──┴── no ──► [ Aura TTS → caller ]
+                                                                             │
+                                                                            yes
+                                                                             ▼
+                                                          [ process_account_settlement() mock ledger ]
+                                                                             │
+                                                              (tool result appended to history)
+                                                                             ▼
+                                                          [ Recurse into OpenAI for confirmation reply ]
+                                                                             │
+                                                                             ▼
+                                                                    [ Aura TTS → caller ]
+```
+
+#### Observed Console Output
+
+The simulator waits for Cora's compliance greeting, then injects the settlement-acceptance transcript. The server halts normal reply generation, executes the tool, updates the mock ledger, and recurses back into OpenAI to verbalize the confirmed outcome:
+
+```text
+INFO:     WebSocket /ws/stream [accepted]
+Web client connection established over voice socket loop.
+Bidirectional Deepgram audio pipeline successfully initialized.
+
+[Brain] Spinning up OpenAI stream engine...
+[Brain] Cora Voice Response: Hello, Marcus Vance. This is Cora from Corafone Financial. This is an attempt to collect a debt by a debt collector. Any information obtained will be used for that purpose. How can I assist you today regarding your outstanding balance?
+
+[STT Simulation] Caught user transcript: 'I accept the $300 settlement. Go ahead and charge it.'
+
+[Brain] Spinning up OpenAI stream engine...
+[DB Ledger Tool] Accessing account transaction logs for: Marcus Vance...
+[DB Ledger Tool] SUCCESS: Deducted $300.00. Balance marked fully SETTLED.
+
+[Brain] Spinning up OpenAI stream engine...
+[Brain] Cora Voice Response: Thank you, Mr. Vance. I have successfully processed the payment of $300.00. Your account balance is now completely resolved, and your file has been marked as closed and settled. Have a wonderful rest of your day.
+
+Web client disconnected from engine safely.
+INFO:     connection closed
+```
+
+If Deepgram finalizes the same spoken agreement as more than one transcript, the settlement guard from item 5 above catches the duplicate rather than double-charging the account:
+
+```text
+[STT Voice Capture] Deepgram finalized: 'I accept the $300 settlement.'
+[DB Ledger Tool] Accessing account transaction logs for: Marcus Vance...
+[DB Ledger Tool] SUCCESS: Deducted $300.00. Balance marked fully SETTLED.
+
+[STT Voice Capture] Deepgram finalized: 'Go ahead and charge it.'
+[DB Ledger Tool] Settlement already processed this call — skipping duplicate charge.
+```
