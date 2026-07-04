@@ -4,6 +4,7 @@ interface CallQueueProps {
   active: boolean;
   loading: boolean;
   recommendation: QueueRecommendation | null;
+  skipped: AccountSummary[];
   onStart: () => void;
   onCall: (account: AccountSummary) => void;
   onSkip: () => void;
@@ -14,11 +15,16 @@ export default function CallQueue({
   active,
   loading,
   recommendation,
+  skipped,
   onStart,
   onCall,
   onSkip,
   onStop,
 }: CallQueueProps) {
+  // The queue stops itself once there's nothing left to offer -- `active`
+  // goes false, but `recommendation` (account: null) sticks around so we can
+  // explain why, until the next "Start queue" click clears it.
+  const justCompleted = !active && recommendation && !recommendation.account;
   return (
     <div className="rounded-xl bg-neutral-900 border border-neutral-800 p-5">
       <div className="flex items-center justify-between mb-4">
@@ -50,9 +56,7 @@ export default function CallQueue({
         <div className="border border-neutral-800 rounded-lg p-4">
           {loading ? (
             <p className="text-sm text-neutral-600">Finding the next account to call…</p>
-          ) : !recommendation?.account ? (
-            <p className="text-sm text-neutral-500">{recommendation?.reasoning ?? "No eligible accounts."}</p>
-          ) : (
+          ) : recommendation?.account ? (
             <div className="space-y-3">
               <p className="text-sm text-neutral-300">
                 Agent recommends calling{" "}
@@ -75,6 +79,20 @@ export default function CallQueue({
                 </button>
               </div>
             </div>
+          ) : (
+            <p className="text-sm text-neutral-500">{recommendation?.reasoning ?? "No eligible accounts."}</p>
+          )}
+        </div>
+      )}
+
+      {justCompleted && (
+        <div className="border border-neutral-800 rounded-lg p-4 space-y-2">
+          <p className="text-sm text-neutral-300">Queue complete.</p>
+          <p className="text-xs text-neutral-500 leading-relaxed">{recommendation.reasoning}</p>
+          {skipped.length > 0 && (
+            <p className="text-xs text-neutral-500">
+              Skipped: {skipped.map((a) => a.customer_name).join(", ")}
+            </p>
           )}
         </div>
       )}

@@ -21,6 +21,7 @@ export default function App() {
   const [queueLoading, setQueueLoading] = useState(false);
   const [queueExcludeIds, setQueueExcludeIds] = useState<number[]>([]);
   const [queueRecommendation, setQueueRecommendation] = useState<QueueRecommendation | null>(null);
+  const [queueSkipped, setQueueSkipped] = useState<AccountSummary[]>([]);
 
   async function loadComplianceFor(accountId: number | null) {
     const summary = await fetchSummary(accountId);
@@ -97,6 +98,11 @@ export default function App() {
     try {
       const recommendation = await fetchNextInQueue(excludeIds);
       setQueueRecommendation(recommendation);
+      // Nothing left to offer -- stop the queue on its own rather than
+      // making the user click Stop before they can start a fresh run.
+      if (!recommendation.account) {
+        setQueueActive(false);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load the next queued account.");
     } finally {
@@ -107,6 +113,7 @@ export default function App() {
   function handleStartQueue() {
     setQueueActive(true);
     setQueueExcludeIds([]);
+    setQueueSkipped([]);
     loadNextInQueue([]);
   }
 
@@ -114,11 +121,14 @@ export default function App() {
     setQueueActive(false);
     setQueueRecommendation(null);
     setQueueExcludeIds([]);
+    setQueueSkipped([]);
   }
 
   function handleSkipQueued() {
     if (!queueRecommendation?.account) return;
-    const nextExcludeIds = [...queueExcludeIds, queueRecommendation.account.account_id];
+    const skippedAccount = queueRecommendation.account;
+    setQueueSkipped((prev) => [...prev, skippedAccount]);
+    const nextExcludeIds = [...queueExcludeIds, skippedAccount.account_id];
     setQueueExcludeIds(nextExcludeIds);
     loadNextInQueue(nextExcludeIds);
   }
@@ -157,6 +167,7 @@ export default function App() {
               active={queueActive}
               loading={queueLoading}
               recommendation={queueRecommendation}
+              skipped={queueSkipped}
               onStart={handleStartQueue}
               onCall={setCallAccount}
               onSkip={handleSkipQueued}
