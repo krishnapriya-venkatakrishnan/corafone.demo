@@ -16,6 +16,14 @@ async def test_apply_settlement(patched_db_pool, mock_db_conn):
     assert account_id == 42
 
 
+async def test_set_requires_manual_review(patched_db_pool, mock_db_conn):
+    await db.set_requires_manual_review(42)
+
+    mock_db_conn.execute.assert_awaited_once_with(
+        "UPDATE accounts SET requires_manual_review = $1 WHERE account_id = $2", True, 42
+    )
+
+
 async def test_create_payment_plan_writes_plan_and_updates_status(patched_db_pool, mock_db_conn):
     await db.create_payment_plan(42, 5, 100.0, 500.0, date(2026, 7, 10))
 
@@ -97,7 +105,7 @@ async def test_get_account_by_id_returns_dict(patched_db_pool):
     account = await db.get_account_by_id(42)
     assert account["account_id"] == 42
     patched_db_pool.fetchrow.assert_awaited_once_with(
-        "SELECT account_id, customer_name, phone_number, current_balance, status "
+        "SELECT account_id, customer_name, phone_number, current_balance, status, requires_manual_review "
         "FROM accounts WHERE account_id = $1",
         42,
     )

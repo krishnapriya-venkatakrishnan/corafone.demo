@@ -1,30 +1,56 @@
-import { useState } from "react";
-import { runScenarios } from "../api";
-import type { ScenarioResultEvent } from "../types";
+import { useEffect, useState } from "react";
+import { fetchScenarios, runScenario, runScenarios } from "../api";
+import type { ScenarioInfo, ScenarioResult } from "../types";
+
+function formatScenarioTitle(name: string): string {
+  const words = name.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1));
+  return `Scenario: ${words.join(" ")}`;
+}
 
 export default function ScenarioRunner() {
-  const [trials, setTrials] = useState(1);
-  const [running, setRunning] = useState(false);
-  const [results, setResults] = useState<ScenarioResultEvent[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [scenarios, setScenarios] = useState<ScenarioInfo[]>([]);
+  const [results, setResults] = useState<Record<string, ScenarioResult>>({});
+  const [runningAll, setRunningAll] = useState(false);
+  const [runningOne, setRunningOne] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  async function handleRun() {
-    setRunning(true);
-    setResults([]);
+  useEffect(() => {
+    fetchScenarios()
+      .then(setScenarios)
+      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load scenarios."));
+  }, []);
+
+  async function handleRunAll() {
+    setRunningAll(true);
     setError(null);
     try {
-      await runScenarios(trials, (event) => {
+      await runScenarios((event) => {
         if (event.type === "scenario_result") {
-          setResults((prev) => [...prev, event]);
+          setResults((prev) => ({ ...prev, [event.scenario]: event }));
         }
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Scenario run failed.");
     } finally {
-      setRunning(false);
+      setRunningAll(false);
     }
   }
+
+  async function handleRunOne(name: string) {
+    setRunningOne(name);
+    setError(null);
+    try {
+      const result = await runScenario(name);
+      setResults((prev) => ({ ...prev, [name]: result }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to run ${name}.`);
+    } finally {
+      setRunningOne(null);
+    }
+  }
+
+  const anyRunning = runningAll || runningOne !== null;
 
   return (
     <div className="rounded-xl bg-neutral-900 border border-neutral-800 p-5">
@@ -32,31 +58,16 @@ export default function ScenarioRunner() {
         <div>
           <h2 className="text-sm font-medium text-neutral-400">Conversation scenario tests</h2>
           <p className="text-xs text-neutral-600 mt-0.5">
-            Runs the real prompt and tools against 8 scripted personas -- costs real OpenAI tokens.
+            Runs the real prompt and tools against scripted personas -- costs real OpenAI tokens.
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 text-xs text-neutral-500">
-            Trials
-            <select
-              value={trials}
-              onChange={(e) => setTrials(Number(e.target.value))}
-              disabled={running}
-              className="bg-neutral-800 border border-neutral-700 rounded-md px-2 py-1 text-neutral-200"
-            >
-              <option value={1}>1</option>
-              <option value={3}>3</option>
-              <option value={5}>5</option>
-            </select>
-          </label>
-          <button
-            onClick={handleRun}
-            disabled={running}
-            className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 disabled:bg-neutral-800 disabled:text-neutral-600 text-neutral-950 disabled:cursor-not-allowed transition-colors"
-          >
-            {running ? "Running…" : "Run Scenarios"}
-          </button>
-        </div>
+        <button
+          onClick={handleRunAll}
+          disabled={anyRunning}
+          className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 disabled:bg-neutral-800 disabled:text-neutral-600 text-neutral-950 disabled:cursor-not-allowed transition-colors"
+        >
+          {runningAll ? "Running…" : "Run All Scenarios"}
+        </button>
       </div>
 
       {error && (
@@ -65,55 +76,70 @@ export default function ScenarioRunner() {
         </div>
       )}
 
-      {results.length === 0 && !running && (
-        <p className="text-xs text-neutral-600 text-center">No results yet -- click Run Scenarios.</p>
+      {scenarios.length === 0 && !error && (
+        <p className="text-xs text-neutral-600 text-center">Loading scenarios…</p>
       )}
 
       <ul className="space-y-2">
-        {results.map((result) => {
-          // Structural issues (e.g. a multi-sentence farewell) are shown as
-          // their own "structural issue" tag below -- they shouldn't turn the
-          // main badge red when the judge otherwise said the call's actual
-          // collections behavior met the scenario's intent.
-          const passed = result.judge_passes >= Math.ceil((result.trials * 2) / 3);
-          const isExpanded = expanded === result.scenario;
+        {scenarios.map((scenario) => {
+          const result = results[scenario.name];
+          const isExpanded = expanded === scenario.name;
+          const isRunningThis = runningOne === scenario.name;
+
           return (
-            <li key={result.scenario} className="border border-neutral-800 rounded-lg overflow-hidden">
-              <button
-                onClick={() => setExpanded(isExpanded ? null : result.scenario)}
-                className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-neutral-800/40 transition-colors"
-              >
-                <span className="text-sm text-neutral-200">{result.scenario.replaceAll("_", " ")}</span>
-                <span className="flex items-center gap-3">
-                  <span
-                    className={`text-xs font-medium px-2.5 py-1 rounded-full border ${
-                      passed
-                        ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
-                        : "bg-red-500/10 text-red-300 border-red-500/20"
-                    }`}
-                  >
-                    {result.judge_passes}/{result.trials} passed
-                  </span>
-                </span>
-              </button>
+            <li key={scenario.name} className="border border-neutral-800 rounded-lg overflow-hidden">
+              <div className="w-full flex items-center justify-between px-4 py-3 gap-3">
+                <button
+                  onClick={() => setExpanded(isExpanded ? null : scenario.name)}
+                  className="flex-1 flex items-center justify-between text-left hover:text-neutral-200 transition-colors"
+                >
+                  <span className="text-sm text-neutral-200">{formatScenarioTitle(scenario.name)}</span>
+                  {result && (
+                    <span
+                      className={`text-xs font-medium px-2.5 py-1 rounded-full border ${
+                        result.passed
+                          ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
+                          : "bg-red-500/10 text-red-300 border-red-500/20"
+                      }`}
+                    >
+                      {result.passed ? "passed" : "failed"}
+                    </span>
+                  )}
+                </button>
+                <button
+                  onClick={() => handleRunOne(scenario.name)}
+                  disabled={anyRunning}
+                  className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium text-neutral-400 bg-neutral-800 border border-neutral-700 hover:bg-neutral-700 hover:text-neutral-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isRunningThis ? "Running…" : "Run"}
+                </button>
+              </div>
               {isExpanded && (
                 <div className="px-4 pb-4 space-y-3 text-xs">
-                  <p className="text-neutral-500">{result.expected_outcome}</p>
-                  {result.hard_failures.length > 0 && (
-                    <ul className="text-red-400 list-disc list-inside">
-                      {result.hard_failures.map((f, i) => (
-                        <li key={i}>{f}</li>
-                      ))}
-                    </ul>
+                  <div>
+                    <p className="text-neutral-600 uppercase tracking-wide text-[10px] mb-1">Expected outcome</p>
+                    <p className="text-neutral-500">{scenario.expected_outcome}</p>
+                  </div>
+                  {!result ? (
+                    <p className="text-neutral-600">Not run yet.</p>
+                  ) : (
+                    <>
+                      {result.hard_failures.length > 0 && (
+                        <ul className="text-red-400 list-disc list-inside">
+                          {result.hard_failures.map((f, i) => (
+                            <li key={i}>{f}</li>
+                          ))}
+                        </ul>
+                      )}
+                      <div className="bg-neutral-950/60 border border-neutral-800 rounded-lg p-3">
+                        <p className="text-neutral-600 uppercase tracking-wide text-[10px] mb-1">Result</p>
+                        <p className={result.passed ? "text-emerald-400" : "text-red-400"}>
+                          {result.passed ? "Met expected outcome" : "Did not meet expected outcome"}
+                        </p>
+                        <p className="text-neutral-500 mt-1">{result.reasoning}</p>
+                      </div>
+                    </>
                   )}
-                  {result.trial_details.map((trial) => (
-                    <div key={trial.trial} className="bg-neutral-950/60 border border-neutral-800 rounded-lg p-3">
-                      <p className={trial.outcome_met ? "text-emerald-400" : "text-red-400"}>
-                        Trial {trial.trial + 1}: {trial.outcome_met ? "met expected outcome" : "did not meet expected outcome"}
-                      </p>
-                      <p className="text-neutral-500 mt-1">{trial.reasoning}</p>
-                    </div>
-                  ))}
                 </div>
               )}
             </li>

@@ -42,6 +42,50 @@ async def test_run_compliance_audit_computes_cost_and_writes_all_fields(session)
     assert abs(args[9] - expected_cost) < 1e-9
 
 
+async def test_run_compliance_audit_flags_account_on_stop_contact_request(session):
+    session.log_lines = ["2026-01-01 00:00:00 [user] please stop calling me"]
+    report = audit.EvaluationReport(
+        mini_miranda_passed=True,
+        pii_redacted_correctly=True,
+        hallucination_detected=False,
+        identity_verified_before_disclosure=True,
+        prohibited_conduct_detected=False,
+        right_to_cease_honored=True,
+        tone_score=5,
+        judge_reasoning="Complied immediately.",
+    )
+    response = _fake_response(report, prompt_tokens=100, completion_tokens=50)
+
+    with patch("app.audit.openai_client.beta.chat.completions.parse", new=AsyncMock(return_value=response)), \
+         patch("app.audit.db.create_ai_evaluation_log", new=AsyncMock()), \
+         patch("app.audit.db.set_requires_manual_review", new=AsyncMock()) as set_review:
+        await audit.run_compliance_audit(session)
+
+    set_review.assert_awaited_once_with(session.account_id)
+
+
+async def test_run_compliance_audit_does_not_flag_account_when_not_applicable(session):
+    session.log_lines = ["2026-01-01 00:00:00 [assistant] hi"]
+    report = audit.EvaluationReport(
+        mini_miranda_passed=True,
+        pii_redacted_correctly=True,
+        hallucination_detected=False,
+        identity_verified_before_disclosure=True,
+        prohibited_conduct_detected=False,
+        right_to_cease_honored=None,
+        tone_score=5,
+        judge_reasoning="Solid call.",
+    )
+    response = _fake_response(report, prompt_tokens=100, completion_tokens=50)
+
+    with patch("app.audit.openai_client.beta.chat.completions.parse", new=AsyncMock(return_value=response)), \
+         patch("app.audit.db.create_ai_evaluation_log", new=AsyncMock()), \
+         patch("app.audit.db.set_requires_manual_review", new=AsyncMock()) as set_review:
+        await audit.run_compliance_audit(session)
+
+    set_review.assert_not_awaited()
+
+
 async def test_run_compliance_audit_swallows_openai_failure(session):
     session.log_lines = ["some line"]
 

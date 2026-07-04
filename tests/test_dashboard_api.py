@@ -6,6 +6,7 @@ agentic decision (app/queue_agent.py) is unit-tested separately in
 test_queue_agent.py -- here it's mocked, same as storage.download_call_log
 is for the transcript endpoint below."""
 
+from datetime import date, datetime
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
@@ -19,9 +20,9 @@ client = TestClient(app)
 def test_accounts_returns_list(patched_db_pool):
     patched_db_pool.fetch.return_value = [
         {"account_id": 1, "customer_name": "Marcus Vance", "phone_number": "+15550199",
-         "current_balance": 500.0, "status": "ACTIVE"},
+         "current_balance": 500.0, "status": "ACTIVE", "requires_manual_review": False},
         {"account_id": 2, "customer_name": "Dana Whitfield", "phone_number": "+15550102",
-         "current_balance": 1450.0, "status": "ACTIVE"},
+         "current_balance": 1450.0, "status": "ACTIVE", "requires_manual_review": False},
     ]
 
     response = client.get("/api/dashboard/accounts")
@@ -36,7 +37,7 @@ def test_summary_with_account_id_uses_get_account_by_id(patched_db_pool):
     patched_db_pool.fetchrow.side_effect = [
         {
             "account_id": 2, "customer_name": "Dana Whitfield", "phone_number": "+15550102",
-            "current_balance": 1450.0, "status": "ACTIVE",
+            "current_balance": 1450.0, "status": "ACTIVE", "requires_manual_review": False,
         },
         {
             "total_calls": 1, "mini_miranda_pass_rate": 1.0, "avg_tone_score": 5.0,
@@ -57,7 +58,7 @@ def test_summary_returns_account_and_compliance(patched_db_pool):
     patched_db_pool.fetchrow.side_effect = [
         {
             "account_id": 42, "customer_name": "Marcus Vance", "phone_number": "+15550199",
-            "current_balance": 500.0, "status": "ACTIVE",
+            "current_balance": 500.0, "status": "ACTIVE", "requires_manual_review": False,
         },
         {
             "total_calls": 2, "mini_miranda_pass_rate": 1.0, "avg_tone_score": 4.5,
@@ -159,16 +160,18 @@ def test_queue_next_returns_recommendation(patched_db_pool, monkeypatch):
     patched_db_pool.fetch.side_effect = [
         [
             {"account_id": 1, "customer_name": "Marcus Vance", "phone_number": "+15550199",
-             "current_balance": 0.0, "status": "SETTLED"},
+             "current_balance": 0.0, "status": "SETTLED", "requires_manual_review": False},
             {"account_id": 2, "customer_name": "Dana Whitfield", "phone_number": "+15550102",
-             "current_balance": 1450.0, "status": "ACTIVE"},
+             "current_balance": 1450.0, "status": "ACTIVE", "requires_manual_review": False},
             {"account_id": 3, "customer_name": "Miguel Ortiz", "phone_number": "+15550103",
-             "current_balance": 275.0, "status": "ACTIVE"},
+             "current_balance": 275.0, "status": "ACTIVE", "requires_manual_review": False},
         ],
-        [],  # get_calls(2)
         [],  # get_pending_callbacks(2)
-        [],  # get_calls(3)
+        [],  # get_active_payment_plans(2)
+        [],  # get_calls(2)
         [],  # get_pending_callbacks(3)
+        [],  # get_active_payment_plans(3)
+        [],  # get_calls(3)
     ]
 
     async def fake_decide(candidates):
@@ -188,7 +191,7 @@ def test_queue_next_returns_recommendation(patched_db_pool, monkeypatch):
 def test_queue_next_returns_none_when_no_eligible_accounts(patched_db_pool, monkeypatch):
     patched_db_pool.fetch.return_value = [
         {"account_id": 1, "customer_name": "Marcus Vance", "phone_number": "+15550199",
-         "current_balance": 0.0, "status": "SETTLED"},
+         "current_balance": 0.0, "status": "SETTLED", "requires_manual_review": False},
     ]
     decide_mock = AsyncMock()
     monkeypatch.setattr("app.dashboard_api.queue_agent.decide_next_call", decide_mock)
@@ -206,12 +209,13 @@ def test_queue_next_respects_exclude_ids(patched_db_pool, monkeypatch):
     patched_db_pool.fetch.side_effect = [
         [
             {"account_id": 2, "customer_name": "Dana Whitfield", "phone_number": "+15550102",
-             "current_balance": 1450.0, "status": "ACTIVE"},
+             "current_balance": 1450.0, "status": "ACTIVE", "requires_manual_review": False},
             {"account_id": 3, "customer_name": "Miguel Ortiz", "phone_number": "+15550103",
-             "current_balance": 275.0, "status": "ACTIVE"},
+             "current_balance": 275.0, "status": "ACTIVE", "requires_manual_review": False},
         ],
-        [],  # get_calls(3) -- account 2 excluded via ?exclude_ids=2
-        [],  # get_pending_callbacks(3)
+        [],  # get_pending_callbacks(3) -- account 2 excluded via ?exclude_ids=2
+        [],  # get_active_payment_plans(3)
+        [],  # get_calls(3)
     ]
 
     async def fake_decide(candidates):
@@ -224,3 +228,86 @@ def test_queue_next_respects_exclude_ids(patched_db_pool, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["account"]["account_id"] == 3
+
+
+def test_queue_next_excludes_accounts_requiring_manual_review(patched_db_pool, monkeypatch):
+    patched_db_pool.fetch.side_effect = [
+        [
+            {"account_id": 2, "customer_name": "Dana Whitfield", "phone_number": "+15550102",
+             "current_balance": 1450.0, "status": "ACTIVE", "requires_manual_review": True},
+            {"account_id": 3, "customer_name": "Miguel Ortiz", "phone_number": "+15550103",
+             "current_balance": 275.0, "status": "ACTIVE", "requires_manual_review": False},
+        ],
+        [],  # get_pending_callbacks(3) -- account 2 never even reaches this stage
+        [],  # get_active_payment_plans(3)
+        [],  # get_calls(3)
+    ]
+
+    async def fake_decide(candidates):
+        assert [c["account_id"] for c in candidates] == [3]
+        return queue_agent.QueueDecision(account_id=3, reasoning="Only candidate not flagged for review.")
+
+    monkeypatch.setattr("app.dashboard_api.queue_agent.decide_next_call", fake_decide)
+
+    response = client.get("/api/dashboard/queue/next")
+
+    assert response.status_code == 200
+    assert response.json()["account"]["account_id"] == 3
+
+
+def test_queue_next_excludes_account_with_future_callback(patched_db_pool, monkeypatch):
+    patched_db_pool.fetch.side_effect = [
+        [
+            {"account_id": 4, "customer_name": "Chandler Bing", "phone_number": "+15550204",
+             "current_balance": 500.0, "status": "ACTIVE", "requires_manual_review": False},
+        ],
+        [{"callback_id": 1, "account_id": 4, "callback_time": datetime(2099, 1, 1), "status": "PENDING",
+          "created_at": datetime(2026, 7, 1)}],  # get_pending_callbacks(4) -- far future, not due yet
+        [],  # get_active_payment_plans(4)
+    ]
+    decide_mock = AsyncMock()
+    monkeypatch.setattr("app.dashboard_api.queue_agent.decide_next_call", decide_mock)
+
+    response = client.get("/api/dashboard/queue/next")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["account"] is None
+    decide_mock.assert_not_called()
+
+
+def test_queue_next_excludes_account_with_future_payment_due_date(patched_db_pool, monkeypatch):
+    patched_db_pool.fetch.side_effect = [
+        [
+            {"account_id": 3, "customer_name": "Joey Tribbiani", "phone_number": "+15550203",
+             "current_balance": 500.0, "status": "PAYMENT_PLAN_ACTIVE", "requires_manual_review": False},
+        ],
+        [],  # get_pending_callbacks(3)
+        [{"plan_id": 1, "account_id": 3, "num_installments": 3, "amount_per_installment": 166.67,
+          "total_amount": 500.0, "start_date": date(2099, 1, 1), "status": "ACTIVE",
+          "created_at": datetime(2026, 7, 1)}],  # get_active_payment_plans(3) -- far future
+    ]
+    decide_mock = AsyncMock()
+    monkeypatch.setattr("app.dashboard_api.queue_agent.decide_next_call", decide_mock)
+
+    response = client.get("/api/dashboard/queue/next")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["account"] is None
+    decide_mock.assert_not_called()
+
+
+def test_list_scenarios_returns_catalog():
+    response = client.get("/api/dashboard/scenarios")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) > 0
+    assert all("name" in s and "expected_outcome" in s for s in body)
+
+
+def test_run_one_scenario_404s_for_unknown_name():
+    response = client.get("/api/dashboard/scenarios/run/not_a_real_scenario")
+
+    assert response.status_code == 404

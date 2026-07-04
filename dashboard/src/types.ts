@@ -6,6 +6,7 @@ export interface AccountSummary {
   phone_number: string;
   current_balance: number;
   status: string;
+  requires_manual_review: boolean;
 }
 
 export interface ComplianceSummary {
@@ -78,24 +79,24 @@ export interface QueueRecommendation {
   candidates_considered: number;
 }
 
-// --- Scenario runner (SSE events from /api/dashboard/scenarios/run) ---
-export interface ScenarioTrialDetail {
-  trial: number;
-  outcome_met: boolean;
+// --- Scenario runner ---
+export interface ScenarioInfo {
+  name: string;
+  expected_outcome: string;
+}
+
+export interface ScenarioResult {
+  scenario: string;
+  expected_outcome: string;
+  passed: boolean;
   reasoning: string;
-  multi_sentence_violations: string[];
-  duplicate_tool_calls: string[];
+  hard_failures: string[];
   transcript: string[];
 }
 
-export interface ScenarioResultEvent {
+// SSE events from /api/dashboard/scenarios/run (run-all)
+export interface ScenarioResultEvent extends ScenarioResult {
   type: "scenario_result";
-  scenario: string;
-  expected_outcome: string;
-  trials: number;
-  judge_passes: number;
-  hard_failures: string[];
-  trial_details: ScenarioTrialDetail[];
 }
 
 export interface ScenarioDoneEvent {

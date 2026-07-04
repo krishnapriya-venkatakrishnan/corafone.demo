@@ -9,7 +9,6 @@ const STATUS_STYLES: Record<string, string> = {
   SETTLED: "bg-emerald-500/10 text-emerald-300 border-emerald-500/20",
   PAYMENT_PLAN_ACTIVE: "bg-sky-500/10 text-sky-300 border-sky-500/20",
   DO_NOT_CALL: "bg-red-500/10 text-red-300 border-red-500/20",
-  DISPUTE: "bg-red-500/10 text-red-300 border-red-500/20",
 };
 
 interface AccountsTableProps {
@@ -80,6 +79,11 @@ export default function AccountsTable({
                         >
                           {account.status.replaceAll("_", " ")}
                         </span>
+                        {account.requires_manual_review && (
+                          <span className="ml-2 text-xs font-medium px-2.5 py-1 rounded-full border bg-red-500/10 text-red-300 border-red-500/20">
+                            Needs review
+                          </span>
+                        )}
                       </td>
                     </tr>
                     {isExpanded && (

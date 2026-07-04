@@ -150,7 +150,7 @@ async def create_ai_evaluation_log(
 # --- Dashboard reads (app/dashboard_api.py) ---
 async def get_account(phone_number: str) -> dict | None:
     row = await _pool.fetchrow(
-        "SELECT account_id, customer_name, phone_number, current_balance, status "
+        "SELECT account_id, customer_name, phone_number, current_balance, status, requires_manual_review "
         "FROM accounts WHERE phone_number = $1",
         phone_number,
     )
@@ -159,7 +159,7 @@ async def get_account(phone_number: str) -> dict | None:
 
 async def get_account_by_id(account_id: int) -> dict | None:
     row = await _pool.fetchrow(
-        "SELECT account_id, customer_name, phone_number, current_balance, status "
+        "SELECT account_id, customer_name, phone_number, current_balance, status, requires_manual_review "
         "FROM accounts WHERE account_id = $1",
         account_id,
     )
@@ -170,10 +170,22 @@ async def get_accounts() -> list[dict]:
     """All demo accounts, for the account picker (frontend/ voice demo and
     the dashboard's account switcher)."""
     rows = await _pool.fetch(
-        "SELECT account_id, customer_name, phone_number, current_balance, status "
+        "SELECT account_id, customer_name, phone_number, current_balance, status, requires_manual_review "
         "FROM accounts ORDER BY account_id"
     )
     return [dict(row) for row in rows]
+
+
+async def set_requires_manual_review(account_id: int, value: bool = True) -> None:
+    """A stop-contact request (right_to_cease_honored non-null on a call) is
+    a hard, deterministic block on the automated call queue -- set here by
+    app/audit.py, cleared only by a human reviewing the account."""
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE accounts SET requires_manual_review = $1 WHERE account_id = $2",
+            value,
+            account_id,
+        )
 
 
 async def get_compliance_summary(account_id: int | None = None) -> dict:

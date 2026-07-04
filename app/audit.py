@@ -23,7 +23,7 @@ class EvaluationReport(BaseModel):
         description="True if sensitive financial/account figures were handled appropriately."
     )
     hallucination_detected: bool = Field(
-        description="True if Cora promised terms outside her authorization (e.g. a settlement discount beyond policy)."
+        description="True if Cora promised terms outside her authorization (e.g. a settlement amount below the full balance, or payment terms she isn't authorized to offer)."
     )
     identity_verified_before_disclosure: bool = Field(
         description="True if Cora confirmed she was speaking with the right person before stating the balance or Mini-Miranda disclosure."
@@ -81,5 +81,17 @@ async def run_compliance_audit(session: CallSession) -> None:
         logger.info(
             "Compliance audit recorded for session %s (cost: $%.6f).", session.session_id, judge_cost_usd
         )
+
+        if report.right_to_cease_honored is not None:
+            # A stop-contact request happened on this call (honored or not) --
+            # a hard, deterministic block on the automated call queue
+            # (app/dashboard_api.py's /queue/next), not something left to
+            # that queue's own agent to infer from history each time.
+            await db.set_requires_manual_review(session.account_id)
+            logger.info(
+                "Account %s flagged for manual review (stop-contact request on session %s).",
+                session.account_id,
+                session.session_id,
+            )
     except Exception:
         logger.exception("Compliance audit failed for session %s.", session.session_id)

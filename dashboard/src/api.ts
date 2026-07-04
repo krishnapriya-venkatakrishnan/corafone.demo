@@ -5,6 +5,8 @@ import type {
   DashboardSummary,
   QueueRecommendation,
   ScenarioEvent,
+  ScenarioInfo,
+  ScenarioResult,
   TranscriptResponse,
 } from "./types";
 
@@ -38,13 +40,14 @@ export const fetchTranscript = (sessionId: string) =>
 export const fetchNextInQueue = (excludeIds: number[]) =>
   getJSON<QueueRecommendation>(`/api/dashboard/queue/next?exclude_ids=${excludeIds.join(",")}`);
 
-/** Consumes the scenario-runner's SSE stream, calling `onEvent` for each
- * scenario as it completes and resolving once the server sends "done". */
-export async function runScenarios(
-  trials: number,
-  onEvent: (event: ScenarioEvent) => void,
-): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/dashboard/scenarios/run?trials=${trials}`);
+export const fetchScenarios = () => getJSON<ScenarioInfo[]>("/api/dashboard/scenarios");
+export const runScenario = (name: string) =>
+  getJSON<ScenarioResult>(`/api/dashboard/scenarios/run/${encodeURIComponent(name)}`);
+
+/** Consumes the run-all SSE stream, calling `onEvent` for each scenario as
+ * it completes and resolving once the server sends "done". */
+export async function runScenarios(onEvent: (event: ScenarioEvent) => void): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/dashboard/scenarios/run`);
   if (!response.ok || !response.body) {
     throw new Error(`scenarios/run failed: ${response.status} ${response.statusText}`);
   }

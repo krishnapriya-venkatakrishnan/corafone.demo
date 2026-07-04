@@ -22,7 +22,7 @@ _MAX_TOOL_CALLS_PER_TURN = 5  # safety cap, not a realistic expectation
 # Pinned fixture identity/balance -- account context is per-call in the live
 # system (app/main.py resolves it from Supabase), but Layer 3 needs a fixed,
 # deterministic account regardless of whatever's seeded live.
-TEST_CUSTOMER_NAME = "Marcus Vance"
+TEST_CUSTOMER_NAME = "Phoebe Buffay"
 TEST_ACCOUNT_BALANCE = 500.00
 
 

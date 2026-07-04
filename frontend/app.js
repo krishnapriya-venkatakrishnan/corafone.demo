@@ -18,7 +18,6 @@ const STATUS_BADGE_STYLES = {
   SETTLED: "bg-sky-500/10 text-sky-300 border-sky-500/20",
   PAYMENT_PLAN_ACTIVE: "bg-sky-500/10 text-sky-300 border-sky-500/20",
   DO_NOT_CALL: "bg-red-500/10 text-red-300 border-red-500/20",
-  DISPUTE: "bg-amber-500/10 text-amber-300 border-amber-500/20",
 };
 
 // --- DOM references ---

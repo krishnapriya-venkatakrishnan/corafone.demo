@@ -14,12 +14,16 @@ _STORAGE_BUCKET = "communications"
 
 
 async def upload_call_log(path: str, content: str) -> None:
-    """Uploads `content` to `{_STORAGE_BUCKET}/{path}` in Supabase Storage."""
+    """Uploads `content` to `{_STORAGE_BUCKET}/{path}` in Supabase Storage.
+    Upserts -- live call paths are always unique (account_id + timestamp) so
+    this never overwrites a real transcript, but it lets seed scripts
+    (app/database/upload_seed_transcripts.py) be re-run safely."""
     url = f"{config.SUPABASE_URL}/storage/v1/object/{_STORAGE_BUCKET}/{path}"
     headers = {
         "Authorization": f"Bearer {config.SUPABASE_SERVICE_ROLE_KEY}",
         "apikey": config.SUPABASE_SERVICE_ROLE_KEY,
         "Content-Type": "text/plain",
+        "x-upsert": "true",
     }
     async with httpx.AsyncClient() as client:
         response = await client.post(url, headers=headers, content=content.encode("utf-8"))

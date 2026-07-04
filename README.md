@@ -505,7 +505,7 @@ This is Layer 1 (unit tests, free and instant) of a broader test strategy. A rea
 
 Layer 1 can't tell you whether Cora actually *behaves* correctly in a conversation -- only that the deterministic code around her does. `tests/scenarios/` drives a full text conversation between the real system prompt (`config.build_system_prompt()`), the real tool schemas, and the real `app/tools.py` execution functions (DB still mocked) against a scripted adversarial customer persona, entirely over OpenAI's chat completions API (no Deepgram/audio -- this tests decision logic, not voice transport). Each transcript is graded two ways: deterministic structural checks (`tests/scenarios/structural_checks.py` -- e.g. does any Cora turn contain more than one sentence, the exact regression class behind the mid-reply pause bug fixed earlier; does a tool ever get called more than once) and an LLM judge scored against that scenario's specific expected outcome (`tests/scenarios/judge.py`).
 
-Seed scenarios (`tests/scenarios/definitions.py`): happy-path settlement, payment plan, and callback; a wrong-person identity check; vague/ambiguous agreement; a garbled/ambiguous date; discount-pressure beyond the 40% policy cap; and a stop-contact request.
+Seed scenarios (`tests/scenarios/definitions.py`): happy-path settlement, payment plan, and callback; a wrong-person identity check; vague/ambiguous agreement; a garbled/ambiguous date; and a stop-contact request.
 
 This is the intended way to validate a prompt change (like the "ask for payment in full before laying out options" idea) against the full scenario set, not just one manual call.
 
