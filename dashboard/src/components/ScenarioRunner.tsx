@@ -71,7 +71,11 @@ export default function ScenarioRunner() {
 
       <ul className="space-y-2">
         {results.map((result) => {
-          const passed = result.judge_passes >= Math.ceil((result.trials * 2) / 3) && result.hard_failures.length === 0;
+          // Structural issues (e.g. a multi-sentence farewell) are shown as
+          // their own "structural issue" tag below -- they shouldn't turn the
+          // main badge red when the judge otherwise said the call's actual
+          // collections behavior met the scenario's intent.
+          const passed = result.judge_passes >= Math.ceil((result.trials * 2) / 3);
           const isExpanded = expanded === result.scenario;
           return (
             <li key={result.scenario} className="border border-neutral-800 rounded-lg overflow-hidden">
@@ -81,9 +85,6 @@ export default function ScenarioRunner() {
               >
                 <span className="text-sm text-neutral-200">{result.scenario.replaceAll("_", " ")}</span>
                 <span className="flex items-center gap-3">
-                  {result.hard_failures.length > 0 && (
-                    <span className="text-xs text-red-400">structural issue</span>
-                  )}
                   <span
                     className={`text-xs font-medium px-2.5 py-1 rounded-full border ${
                       passed

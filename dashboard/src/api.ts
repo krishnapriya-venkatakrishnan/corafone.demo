@@ -3,6 +3,7 @@ import type {
   CallRecord,
   Commitments,
   DashboardSummary,
+  QueueRecommendation,
   ScenarioEvent,
   TranscriptResponse,
 } from "./types";
@@ -34,6 +35,8 @@ export const fetchCommitments = (accountId: number | null = null) =>
   getJSON<Commitments>(`/api/dashboard/commitments${accountQuery(accountId)}`);
 export const fetchTranscript = (sessionId: string) =>
   getJSON<TranscriptResponse>(`/api/dashboard/calls/${sessionId}/transcript`);
+export const fetchNextInQueue = (excludeIds: number[]) =>
+  getJSON<QueueRecommendation>(`/api/dashboard/queue/next?exclude_ids=${excludeIds.join(",")}`);
 
 /** Consumes the scenario-runner's SSE stream, calling `onEvent` for each
  * scenario as it completes and resolving once the server sends "done". */

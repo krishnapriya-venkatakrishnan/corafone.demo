@@ -41,7 +41,7 @@ async def test_scenario(scenario, patched_db_pool):
         if not structural_checks.tool_called_after_confirmation(result.transcript, result.tool_calls):
             soft_warnings.append(f"trial {trial}: no clear confirmation found before a tool call")
 
-        judgment = await judge_scenario(result.transcript, scenario.expected_outcome)
+        judgment = await judge_scenario(result.transcript, scenario.expected_outcome, result.tool_calls)
         if judgment.outcome_met:
             judge_passes += 1
         else:

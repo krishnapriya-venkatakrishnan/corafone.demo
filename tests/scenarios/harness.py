@@ -90,6 +90,12 @@ async def _collector_turn(
                 except Exception as exc:
                     tool_result = {"status": "error", "message": str(exc)}
             result.tool_calls.append(tool_call.function.name)
+            # Placed in chronological order alongside the conversational
+            # lines so the judge (tests/scenarios/judge.py) can see exactly
+            # when a tool fired relative to the dialogue, not just that it
+            # fired at some point -- ambiguous ordering otherwise leads it to
+            # guess wrong about before/after a confirmation.
+            result.transcript.append(f"[tool called: {tool_call.function.name}]")
             messages.append(
                 {"role": "tool", "tool_call_id": tool_call.id, "content": json.dumps(tool_result)}
             )
@@ -128,13 +134,18 @@ async def run_conversation(
         consumer_view.append({"role": "user", "content": customer_reply})
         collector_messages.append({"role": "user", "content": customer_reply})
 
-        if any(phrase in customer_reply.lower() for phrase in _END_PHRASES):
-            break
-
+        # Cora always gets a turn to react -- including calling a tool and
+        # confirming it -- even if the customer's message already included a
+        # goodbye (personas are told to say goodbye "once resolved" and often
+        # fold that into the same reply as their agreement). Checking for the
+        # end phrase *before* this turn would cut Cora off mid-action.
         cora_reply = await _collector_turn(collector_messages, session, result)
         if cora_reply is None:
             break
         result.transcript.append(f"assistant: {cora_reply}")
         consumer_view.append({"role": "assistant", "content": cora_reply})
+
+        if any(phrase in customer_reply.lower() for phrase in _END_PHRASES):
+            break
 
     return result

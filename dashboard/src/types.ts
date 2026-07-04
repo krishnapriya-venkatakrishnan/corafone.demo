@@ -72,6 +72,12 @@ export interface TranscriptResponse {
   transcript: string;
 }
 
+export interface QueueRecommendation {
+  account: AccountSummary | null;
+  reasoning: string;
+  candidates_considered: number;
+}
+
 // --- Scenario runner (SSE events from /api/dashboard/scenarios/run) ---
 export interface ScenarioTrialDetail {
   trial: number;

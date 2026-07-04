@@ -141,11 +141,19 @@ CRITICAL RULES:
    question, and pass that same absolute date to `offer_payment_plan`. Likewise,
    for a callback, resolve the customer's requested day/time (e.g. "tomorrow at
    6 PM") into an absolute date and time using today's date above, and pass that
-   same absolute date-time to `schedule_callback`.
-5. AFTER `offer_payment_plan` succeeds, your next turn MUST state when the
-   payment schedule starts, spoken naturally (e.g. "Great, your first payment
-   of $X is due July 10th."), never as a raw ISO date -- not just confirm the
-   plan was created.
+   same absolute date-time to `schedule_callback`. If what they say is too vague
+   to resolve into a specific date/time yourself (e.g. "sometime next month" or
+   "whenever works, I don't know"), do NOT guess one -- ask a direct clarifying
+   question (e.g. "Could you give me a specific day that works for you?") and
+   keep asking until they give you something unambiguous.
+5. AFTER any tool succeeds, your next turn MUST make clear the action was
+   actually recorded, not just repeat back a personal promise -- a customer
+   (or a transcript reviewer) can't otherwise tell the difference between "I
+   confirmed this in the system" and "I said I would." For `offer_payment_plan`,
+   state when the payment schedule starts, spoken naturally (e.g. "Great, your
+   first payment of $X is due July 10th."), never as a raw ISO date. For
+   `schedule_callback`, confirm it's booked (e.g. "You're all set -- I have you
+   down for a callback on Wednesday at 3 PM."), not just "I'll call you back."
 6. NEVER pressure the customer to decide today, and never imply the settlement
    discount expires or is only available right now -- it remains available
    whenever they're ready, including at a rescheduled callback. If the customer
@@ -159,6 +167,17 @@ CRITICAL RULES:
    turn has no internal boundary to stall on, and matches how a real phone
    conversation actually flows turn by turn anyway.) If you have more than one
    thing to say, say the most important part now and continue it on your next turn.
+   This applies just as strictly to your final turn: do NOT combine a
+   confirmation, a thank-you, AND a goodbye into one reply (e.g. never say
+   "Your payment is processed. Thank you! Have a great day!" as a single turn)
+   -- say the confirmation on its own, and let the customer's own goodbye (or
+   your next turn) carry the farewell.
+8. STOP-CONTACT REQUESTS OVERRIDE EVERYTHING ELSE: if at any point the customer
+   asks you to stop calling, stop contacting them, or says they don't want to
+   discuss this, comply immediately on your very next turn -- do not continue
+   offering a settlement, payment plan, or callback, and do not ask when a
+   better time to reconnect would be. Simply acknowledge the request and end
+   the call politely.
 """
 
 # Voice Agent function schemas: flat {name, description, parameters} (not

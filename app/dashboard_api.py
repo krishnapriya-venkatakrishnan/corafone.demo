@@ -11,10 +11,14 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import config, db, storage
+from . import config, db, queue_agent, storage
 from .session import CallSession
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+
+# Accounts in these states are never eligible for the auto-queue -- plain
+# deterministic filtering, not something that needs the agent's judgment.
+_QUEUE_INELIGIBLE_STATUSES = {"SETTLED", "DO_NOT_CALL"}
 
 
 # --- Response models ---
@@ -90,6 +94,12 @@ class TranscriptResponse(BaseModel):
     transcript: str
 
 
+class QueueRecommendation(BaseModel):
+    account: AccountSummary | None
+    reasoning: str
+    candidates_considered: int
+
+
 # --- Read-only endpoints ---
 @router.get("/accounts", response_model=list[AccountSummary])
 async def get_accounts() -> list[dict]:
@@ -130,6 +140,61 @@ async def get_transcript(session_id: str) -> TranscriptResponse:
     return TranscriptResponse(session_id=session_id, transcript=text)
 
 
+# --- Agentic call queue ---
+@router.get("/queue/next", response_model=QueueRecommendation)
+async def get_next_in_queue(exclude_ids: str = "") -> QueueRecommendation:
+    """Deterministically filters to eligible accounts (not SETTLED/DO_NOT_CALL,
+    not already handled this queue run per `exclude_ids`), then hands the
+    remaining candidates -- each enriched with its most recent call's
+    disposition/compliance flags and any pending callback -- to
+    queue_agent.decide_next_call for the one judgment call that's actually
+    worth an LLM: should this specific account be called next, or skipped."""
+    excluded = {int(x) for x in exclude_ids.split(",") if x.strip()}
+
+    accounts = await db.get_accounts()
+    eligible = [
+        a
+        for a in accounts
+        if a["status"] not in _QUEUE_INELIGIBLE_STATUSES and a["account_id"] not in excluded
+    ]
+
+    if not eligible:
+        return QueueRecommendation(account=None, reasoning="No eligible accounts.", candidates_considered=0)
+
+    candidates = []
+    for account in eligible:
+        recent_calls = await db.get_calls(account["account_id"])
+        pending_callbacks = await db.get_pending_callbacks(account["account_id"])
+        last_call = recent_calls[0] if recent_calls else None
+        candidates.append(
+            {
+                "account_id": account["account_id"],
+                "customer_name": account["customer_name"],
+                "status": account["status"],
+                "current_balance": account["current_balance"],
+                "most_recent_call": (
+                    {
+                        "created_at": str(last_call["created_at"]),
+                        "disposition_code": last_call["disposition_code"],
+                        "right_to_cease_honored": last_call["right_to_cease_honored"],
+                        "prohibited_conduct_detected": last_call["prohibited_conduct_detected"],
+                    }
+                    if last_call
+                    else None
+                ),
+                "pending_callback_time": (
+                    str(pending_callbacks[0]["callback_time"]) if pending_callbacks else None
+                ),
+            }
+        )
+
+    decision = await queue_agent.decide_next_call(candidates)
+    chosen = next((a for a in eligible if a["account_id"] == decision.account_id), None)
+    return QueueRecommendation(
+        account=chosen, reasoning=decision.reasoning, candidates_considered=len(candidates)
+    )
+
+
 # --- Live scenario-test runner ---
 async def _scenario_event_stream(trials: int):
     """Runs every scenario in tests/scenarios/definitions.py in-process,
@@ -161,7 +226,7 @@ async def _scenario_event_stream(trials: int):
                 if duplicate_calls:
                     hard_failures.append(f"trial {trial}: tool(s) called more than once")
 
-                judgment = await judge_scenario(result.transcript, scenario.expected_outcome)
+                judgment = await judge_scenario(result.transcript, scenario.expected_outcome, result.tool_calls)
                 if judgment.outcome_met:
                     judge_passes += 1
 
