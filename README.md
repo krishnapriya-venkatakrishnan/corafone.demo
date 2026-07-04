@@ -15,7 +15,7 @@ An AI voice agent that makes outbound debt-collection calls — holds a real spo
 ## Architecture
 
 <!-- Export the diagram from Excalidraw/Eraser and save it as docs/diagrams/architecture.png (or .svg) -- this embed will pick it up automatically. -->
-![Architecture diagram](docs/diagrams/system_architecture.png)
+![Architecture diagram](docs/diagrams/system_architecture.svg)
 
 **Five separate AI decision-makers**, each with a different job and a different amount of autonomy:
 
