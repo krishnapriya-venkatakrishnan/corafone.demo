@@ -11,14 +11,10 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import config, db, queue_agent, storage
+from . import config, db, storage
 from .session import CallSession
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
-
-# Accounts in these states are never eligible for the auto-queue -- plain
-# deterministic filtering, not something that needs the agent's judgment.
-_QUEUE_INELIGIBLE_STATUSES = {"SETTLED", "DO_NOT_CALL"}
 
 
 # --- Response models ---
@@ -95,12 +91,6 @@ class TranscriptResponse(BaseModel):
     transcript: str
 
 
-class QueueRecommendation(BaseModel):
-    account: AccountSummary | None
-    reasoning: str
-    candidates_considered: int
-
-
 class ScenarioInfo(BaseModel):
     name: str
     expected_outcome: str
@@ -153,82 +143,6 @@ async def get_transcript(session_id: str) -> TranscriptResponse:
         raise HTTPException(status_code=404, detail="No transcript found for this call.")
     text = await storage.download_call_log(path)
     return TranscriptResponse(session_id=session_id, transcript=text)
-
-
-# --- Agentic call queue ---
-@router.get("/queue/next", response_model=QueueRecommendation)
-async def get_next_in_queue(exclude_ids: str = "") -> QueueRecommendation:
-    """Deterministically filters to eligible accounts, then hands the
-    remainder -- each enriched with its most recent call's disposition/
-    compliance flags -- to queue_agent.decide_next_call for the one judgment
-    call that's actually worth an LLM: which of the *already-eligible*
-    accounts should be called next, and why.
-
-    Three checks are deterministic, not left to the agent, because getting
-    them wrong is a compliance problem, not a suboptimal pick:
-    - status is SETTLED/DO_NOT_CALL, or already handled this queue run
-      (`exclude_ids`).
-    - `requires_manual_review` is set (a past call recorded a stop-contact
-      request -- see app/audit.py) -- a hard block, cleared only by a human.
-    - a pending callback or the next payment plan due date is still in the
-      future -- calling early would contradict what was already promised.
-    """
-    excluded = {int(x) for x in exclude_ids.split(",") if x.strip()}
-    now = datetime.now()
-    today = date.today()
-
-    accounts = await db.get_accounts()
-    status_eligible = [
-        a
-        for a in accounts
-        if a["status"] not in _QUEUE_INELIGIBLE_STATUSES
-        and not a["requires_manual_review"]
-        and a["account_id"] not in excluded
-    ]
-
-    eligible = []
-    candidates = []
-    for account in status_eligible:
-        pending_callbacks = await db.get_pending_callbacks(account["account_id"])
-        active_plans = await db.get_active_payment_plans(account["account_id"])
-        next_callback_time = pending_callbacks[0]["callback_time"] if pending_callbacks else None
-        next_due_date = active_plans[0]["start_date"] if active_plans else None
-
-        if next_callback_time is not None and next_callback_time > now:
-            continue  # callback hasn't come due yet
-        if next_due_date is not None and next_due_date > today:
-            continue  # next payment isn't due yet
-
-        recent_calls = await db.get_calls(account["account_id"])
-        last_call = recent_calls[0] if recent_calls else None
-        eligible.append(account)
-        candidates.append(
-            {
-                "account_id": account["account_id"],
-                "customer_name": account["customer_name"],
-                "status": account["status"],
-                "current_balance": account["current_balance"],
-                "most_recent_call": (
-                    {
-                        "created_at": str(last_call["created_at"]),
-                        "disposition_code": last_call["disposition_code"],
-                        "right_to_cease_honored": last_call["right_to_cease_honored"],
-                        "prohibited_conduct_detected": last_call["prohibited_conduct_detected"],
-                    }
-                    if last_call
-                    else None
-                ),
-            }
-        )
-
-    if not eligible:
-        return QueueRecommendation(account=None, reasoning="No eligible accounts.", candidates_considered=0)
-
-    decision = await queue_agent.decide_next_call(candidates)
-    chosen = next((a for a in eligible if a["account_id"] == decision.account_id), None)
-    return QueueRecommendation(
-        account=chosen, reasoning=decision.reasoning, candidates_considered=len(candidates)
-    )
 
 
 # --- Live scenario-test runner ---

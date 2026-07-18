@@ -3,7 +3,6 @@ import type {
   CallRecord,
   Commitments,
   DashboardSummary,
-  QueueRecommendation,
   ScenarioEvent,
   ScenarioInfo,
   ScenarioResult,
@@ -37,8 +36,6 @@ export const fetchCommitments = (accountId: number | null = null) =>
   getJSON<Commitments>(`/api/dashboard/commitments${accountQuery(accountId)}`);
 export const fetchTranscript = (sessionId: string) =>
   getJSON<TranscriptResponse>(`/api/dashboard/calls/${sessionId}/transcript`);
-export const fetchNextInQueue = (excludeIds: number[]) =>
-  getJSON<QueueRecommendation>(`/api/dashboard/queue/next?exclude_ids=${excludeIds.join(",")}`);
 
 export const fetchScenarios = () => getJSON<ScenarioInfo[]>("/api/dashboard/scenarios");
 export const runScenario = (name: string) =>

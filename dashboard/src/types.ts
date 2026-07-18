@@ -73,12 +73,6 @@ export interface TranscriptResponse {
   transcript: string;
 }
 
-export interface QueueRecommendation {
-  account: AccountSummary | null;
-  reasoning: string;
-  candidates_considered: number;
-}
-
 // --- Scenario runner ---
 export interface ScenarioInfo {
   name: string;

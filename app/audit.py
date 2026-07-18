@@ -84,9 +84,8 @@ async def run_compliance_audit(session: CallSession) -> None:
 
         if report.right_to_cease_honored is not None:
             # A stop-contact request happened on this call (honored or not) --
-            # a hard, deterministic block on the automated call queue
-            # (app/dashboard_api.py's /queue/next), not something left to
-            # that queue's own agent to infer from history each time.
+            # a hard, deterministic flag for manual review, not something
+            # left to an LLM to infer from history each time.
             await db.set_requires_manual_review(session.account_id)
             logger.info(
                 "Account %s flagged for manual review (stop-contact request on session %s).",

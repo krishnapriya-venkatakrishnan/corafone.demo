@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
-import { fetchAccounts, fetchCalls, fetchCommitments, fetchNextInQueue, fetchSummary } from "./api";
-import type { AccountSummary, CallRecord, Commitments, ComplianceSummary, QueueRecommendation } from "./types";
+import { fetchAccounts, fetchCalls, fetchCommitments, fetchSummary } from "./api";
+import type { AccountSummary, CallRecord, Commitments, ComplianceSummary } from "./types";
 import AccountsTable from "./components/AccountsTable";
 import CallModal from "./components/CallModal";
-import CallQueue from "./components/CallQueue";
 import ScenarioRunner from "./components/ScenarioRunner";
 
 export default function App() {
@@ -16,12 +15,6 @@ export default function App() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-
-  const [queueActive, setQueueActive] = useState(false);
-  const [queueLoading, setQueueLoading] = useState(false);
-  const [queueExcludeIds, setQueueExcludeIds] = useState<number[]>([]);
-  const [queueRecommendation, setQueueRecommendation] = useState<QueueRecommendation | null>(null);
-  const [queueSkipped, setQueueSkipped] = useState<AccountSummary[]>([]);
 
   async function loadComplianceFor(accountId: number | null) {
     const summary = await fetchSummary(accountId);
@@ -93,46 +86,6 @@ export default function App() {
     }
   }
 
-  async function loadNextInQueue(excludeIds: number[]) {
-    setQueueLoading(true);
-    try {
-      const recommendation = await fetchNextInQueue(excludeIds);
-      setQueueRecommendation(recommendation);
-      // Nothing left to offer -- stop the queue on its own rather than
-      // making the user click Stop before they can start a fresh run.
-      if (!recommendation.account) {
-        setQueueActive(false);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load the next queued account.");
-    } finally {
-      setQueueLoading(false);
-    }
-  }
-
-  function handleStartQueue() {
-    setQueueActive(true);
-    setQueueExcludeIds([]);
-    setQueueSkipped([]);
-    loadNextInQueue([]);
-  }
-
-  function handleStopQueue() {
-    setQueueActive(false);
-    setQueueRecommendation(null);
-    setQueueExcludeIds([]);
-    setQueueSkipped([]);
-  }
-
-  function handleSkipQueued() {
-    if (!queueRecommendation?.account) return;
-    const skippedAccount = queueRecommendation.account;
-    setQueueSkipped((prev) => [...prev, skippedAccount]);
-    const nextExcludeIds = [...queueExcludeIds, skippedAccount.account_id];
-    setQueueExcludeIds(nextExcludeIds);
-    loadNextInQueue(nextExcludeIds);
-  }
-
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans antialiased">
       <div className="pointer-events-none fixed inset-0 flex items-start justify-center overflow-hidden">
@@ -163,17 +116,6 @@ export default function App() {
           <p className="text-neutral-500 text-sm">Loading…</p>
         ) : (
           <>
-            <CallQueue
-              active={queueActive}
-              loading={queueLoading}
-              recommendation={queueRecommendation}
-              skipped={queueSkipped}
-              onStart={handleStartQueue}
-              onCall={setCallAccount}
-              onSkip={handleSkipQueued}
-              onStop={handleStopQueue}
-            />
-
             <AccountsTable
               accounts={accounts}
               expandedAccountId={expandedAccountId}
@@ -193,23 +135,10 @@ export default function App() {
         <CallModal
           account={callAccount}
           onClose={() => {
-            // Capture before clearing -- needed to tell whether this was the
-            // queue's own recommended call (vs. a manual click elsewhere)
-            // and, if so, to advance to the next one.
-            const wasQueuedCall =
-              queueActive && queueRecommendation?.account?.account_id === callAccount.account_id;
-            const justCalledId = callAccount.account_id;
-
             setCallAccount(null);
             // Refresh in place (no full-page "Loading…" flash) so the just-
             // finished call's data (balance/status/history) shows immediately.
             loadDashboardData();
-
-            if (wasQueuedCall) {
-              const nextExcludeIds = [...queueExcludeIds, justCalledId];
-              setQueueExcludeIds(nextExcludeIds);
-              loadNextInQueue(nextExcludeIds);
-            }
           }}
         />
       )}

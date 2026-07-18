@@ -8,21 +8,19 @@ An AI voice agent that makes outbound debt-collection calls — holds a real spo
 - **Agentic actions, not just talk** — the agent can settle the balance in full, set up a 2-6 month installment plan, or schedule a callback, each backed by a real, idempotency-guarded database write.
 - **Deterministic compliance gates** — a stop-contact request permanently blocks future auto-dialing (`requires_manual_review`), and accounts are never called before a promised callback or payment due date — both enforced in code, not left to an LLM's judgment.
 - **Post-call compliance audit** — every transcript is graded by an LLM judge for the Mini-Miranda disclosure, identity verification, hallucinated terms, prohibited conduct, and tone.
-- **Agentic call queue** — a separate LLM decides which eligible account to call next from real account/call history, with its reasoning shown before you place the call.
 - **Scenario test suite** — seven adversarial conversation scenarios (happy path, vague agreement, wrong person, stop-contact request, etc.), run against the real prompt and tools with a mocked DB, graded by structural checks and an LLM judge. Runnable from the dashboard or CI.
-- **Dashboard** — account status, compliance rollup, call history with full transcripts, active payment plans/callbacks, the agentic queue, and a live scenario-test runner.
+- **Dashboard** — account status, compliance rollup, call history with full transcripts, active payment plans/callbacks, and a live scenario-test runner.
 
 ## Architecture
 
 <!-- Export the diagram from Excalidraw/Eraser and save it as docs/diagrams/architecture.png (or .svg) -- this embed will pick it up automatically. -->
 ![Architecture diagram](docs/diagrams/system_architecture.svg)
 
-**Five separate AI decision-makers**, each with a different job and a different amount of autonomy:
+**Four separate AI decision-makers**, each with a different job and a different amount of autonomy:
 
 | Component | File | Model | Nature |
 |---|---|---|---|
 | Cora | `app/voice_agent.py` + `config.py` | gpt-4o-mini | Multi-turn conversational agent, live on the call |
-| Queue Agent | `app/queue_agent.py` | gpt-4o | Single-shot: picks which eligible account to call next |
 | Compliance Judge | `app/audit.py` | gpt-4o | Single-shot: grades the finished call transcript |
 | Scenario Judge | `tests/scenarios/judge.py` | gpt-4o | Single-shot: grades a test scenario's transcript against its expected outcome |
 | Consumer Persona | `tests/scenarios/harness.py` | gpt-4o-mini | Multi-turn, test-only: simulates the customer in scenario tests |
@@ -31,7 +29,7 @@ An AI voice agent that makes outbound debt-collection calls — holds a real spo
 - **Live calls**: Browser → FastAPI Gateway (`/ws/stream`) → Voice Session Relay → Deepgram Voice Agent (which owns STT, the OpenAI "think" call, and TTS) → back to the browser. The relay captures the transcript turn-by-turn as it happens and, on hangup, uploads it to Supabase Storage and hands it to the Compliance Judge.
 - **Scenario tests**: a FastAPI endpoint drives a full text conversation directly over OpenAI's chat completions API — no Deepgram, no audio — between the Consumer Persona and Cora Core, against a mocked DB, then hands the transcript to the Scenario Judge.
 
-**The compliance feedback loop**: whenever the Compliance Judge detects a stop-contact request on a call, it sets `accounts.requires_manual_review = TRUE`. The call queue's eligibility check reads that flag before ever asking the Queue Agent's LLM to consider the account — a past compliance event permanently and deterministically removes an account from future auto-dialing.
+**The compliance feedback loop**: whenever the Compliance Judge detects a stop-contact request on a call, it sets `accounts.requires_manual_review = TRUE` — a past compliance event permanently and deterministically flags the account, cleared only by a human.
 
 ## Data model
 
@@ -49,7 +47,7 @@ erDiagram
         string phone_number UK
         numeric current_balance
         string status "ACTIVE / SETTLED / PAYMENT_PLAN_ACTIVE / DO_NOT_CALL"
-        bool requires_manual_review "hard block on the call queue"
+        bool requires_manual_review "hard block, cleared only by a human"
     }
     communication_logs {
         int log_id PK
@@ -174,7 +172,6 @@ app/
   db.py              Supabase Postgres access (asyncpg)
   storage.py         Supabase Storage access (transcripts)
   audit.py           Post-call compliance judge
-  queue_agent.py     Agentic call-queue picker
   dashboard_api.py   Read-only dashboard API + live scenario-test runner
   session.py         Per-call state (CallSession)
   database/          Schema, migrations, seed data + seed transcripts
@@ -190,12 +187,13 @@ tests/
 
 - **Mini-Miranda disclosure** is a fixed, verbatim line stated on the first turn once identity is confirmed — never left to the LLM to paraphrase.
 - **Identity verification precedes any debt disclosure** — if the person on the line isn't confirmed to be the account holder, Cora will not reveal the balance, the debt, or even that this is a collections call.
-- **Stop-contact requests are a hard stop**: honored immediately, mid-conversation, regardless of what else was being discussed — and permanently block that account from the automated call queue afterward (`requires_manual_review`), independent of what the LLM itself decided in the moment.
+- **Stop-contact requests are a hard stop**: honored immediately, mid-conversation, regardless of what else was being discussed — and permanently flag that account for manual review afterward (`requires_manual_review`), independent of what the LLM itself decided in the moment. This flag is set deterministically in code (`app/audit.py`), not left to an LLM to infer from history — see Known limitations for what currently reads it.
 - **No unauthorized terms**: settlement is full-balance-only (no discount authority), and payment plans are capped at 2-6 monthly installments — anything else is flagged by the compliance judge as a hallucination.
 - **Account state changes never trust the LLM's own account_id** — it's resolved server-side from the phone number at call start and never exposed as a tool parameter.
 
 ## Known limitations
 
+- **No auto-dialer enforces `requires_manual_review`.** The flag is still set deterministically the moment a stop-contact request is detected (`app/audit.py` → `db.set_requires_manual_review`), and the dashboard surfaces it (the "Needs review" badge). But this project only ever places one call at a time — there's no automated call queue left to gate on it. Enforcement (blocking a flagged account from being auto-dialed again) is out of scope for a single-call task; wiring the flag into whatever schedules future outbound calls is the remaining piece.
 - FDCPA's call-frequency-limit rule (contact attempts per debtor per week) isn't enforced — it needs cross-call aggregation over `communication_logs`, not a per-call judge.
 - The live conversation's OpenAI token cost isn't measurable — Deepgram intermediates those calls, so only judge/picker LLM costs (`judge_cost_usd`) are tracked precisely.
 - The Scenario Judge only sees transcript text, not which tools actually fired — tool-call-count claims are covered by separate structural checks, not the judge itself.

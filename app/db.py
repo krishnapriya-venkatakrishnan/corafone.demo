@@ -177,9 +177,9 @@ async def get_accounts() -> list[dict]:
 
 
 async def set_requires_manual_review(account_id: int, value: bool = True) -> None:
-    """A stop-contact request (right_to_cease_honored non-null on a call) is
-    a hard, deterministic block on the automated call queue -- set here by
-    app/audit.py, cleared only by a human reviewing the account."""
+    """A stop-contact request (right_to_cease_honored non-null on a call)
+    flags the account for manual review -- set here by app/audit.py, cleared
+    only by a human reviewing the account."""
     async with _pool.acquire() as conn:
         await conn.execute(
             "UPDATE accounts SET requires_manual_review = $1 WHERE account_id = $2",
