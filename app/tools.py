@@ -1,5 +1,5 @@
-"""Backends for the three agent tools (settlement, callback scheduling,
-payment plans) and their dispatch from Deepgram's FunctionCallRequest.
+"""Backends for the two agent tools (settlement, payment plans) and their
+dispatch from Deepgram's FunctionCallRequest.
 
 Each `process_*`/`schedule_*`/`create_*` function persists its outcome to
 Supabase (app/db.py). The `_execute_*_tool_call` wrappers add idempotency
@@ -11,7 +11,7 @@ a phone call gives the model no reliable way to know its own database id.
 import json
 import logging
 import uuid
-from datetime import date, datetime
+from datetime import date
 
 from deepgram.agent.v1.types import AgentV1SendFunctionCallResponse
 
@@ -59,47 +59,6 @@ async def _execute_settlement_tool_call(args: dict, session: CallSession) -> dic
         append_call_log(
             session, "Billing",
             f"Settlement processed: {result['transaction_id']}, ${result['amount_charged']:.2f} charged.",
-        )
-        return result
-
-
-# --- Callback scheduling ---
-async def schedule_followup_callback(account_id: int, callback_datetime: str) -> dict:
-    """Books a follow-up call into the calendar/dialer system. `callback_datetime`
-    is an absolute ISO 8601 string (the LLM resolves it from today's date + the
-    customer's own words -- see config.build_system_prompt rule 4)."""
-    parsed_callback_time = datetime.fromisoformat(callback_datetime)
-    logger.info("Scheduler: booking follow-up callback for %s...", parsed_callback_time)
-    await db.create_scheduled_callback(account_id, parsed_callback_time)
-    callback_id = f"cb_corafone_{uuid.uuid4().hex[:12]}"
-    await db.log_communication(
-        account_id, f"Callback scheduled: {callback_id}, for {parsed_callback_time.isoformat()}."
-    )
-    logger.info("Scheduler: SUCCESS -- callback %s booked for %s.", callback_id, parsed_callback_time)
-    return {
-        "status": "scheduled",
-        "callback_id": callback_id,
-        "callback_time": parsed_callback_time.isoformat(),
-    }
-
-
-async def _execute_schedule_callback_tool_call(args: dict, session: CallSession) -> dict:
-    async with session.callback_lock:
-        if session.callback_scheduled:
-            logger.info("Callback already scheduled this call.")
-            return {
-                "status": "already_scheduled",
-                "callback_id": session.callback_id,
-                "callback_time": session.callback_time,
-            }
-
-        result = await schedule_followup_callback(session.account_id, args["callback_datetime"])
-        session.callback_scheduled = True
-        session.callback_id = result["callback_id"]
-        session.callback_time = result["callback_time"]
-        append_call_log(
-            session, "Scheduler",
-            f"Callback scheduled: {result['callback_id']}, for {result['callback_time']}.",
         )
         return result
 
@@ -175,7 +134,6 @@ async def _execute_payment_plan_tool_call(args: dict, session: CallSession) -> d
 # --- Dispatch ---
 _FUNCTION_CALL_HANDLERS = {
     "process_account_settlement": _execute_settlement_tool_call,
-    "schedule_callback": _execute_schedule_callback_tool_call,
     "offer_payment_plan": _execute_payment_plan_tool_call,
 }
 

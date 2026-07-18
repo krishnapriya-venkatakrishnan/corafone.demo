@@ -134,7 +134,6 @@ async def initialize_agent_connection(session: CallSession) -> None:
                     prompt=config.build_system_prompt(session.customer_name, session.account_balance),
                     functions=[
                         config.build_settlement_function_schema(session.account_balance),
-                        config.SCHEDULE_CALLBACK_FUNCTION_SCHEMA,
                         config.OFFER_PAYMENT_PLAN_FUNCTION_SCHEMA,
                     ],
                 ),
@@ -174,8 +173,6 @@ async def teardown_session(session: CallSession) -> None:
             disposition_code = "SETTLED"
         elif session.payment_plan_created:
             disposition_code = "PAYMENT_PLAN_ACTIVE"
-        elif session.callback_scheduled:
-            disposition_code = "CALLBACK_SCHEDULED"
         else:
             disposition_code = "NO_ACTION"
 

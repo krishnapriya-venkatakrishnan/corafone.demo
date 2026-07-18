@@ -12,7 +12,6 @@ def test_call_session_defaults(fake_websocket):
     assert re.fullmatch(r"sess_[0-9a-f]{10}", s.session_id)
     assert s.account_id is None
     assert s.settlement_settled is False
-    assert s.callback_scheduled is False
     assert s.payment_plan_created is False
     assert s.barge_in_count == 0
     assert s.error_count == 0

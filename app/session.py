@@ -32,12 +32,6 @@ class CallSession:
     settlement_transaction_id: str | None = None
     settlement_amount: float | None = None
 
-    # Callback-scheduling idempotency guard.
-    callback_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    callback_scheduled: bool = False
-    callback_id: str | None = None
-    callback_time: str | None = None
-
     # Payment-plan idempotency guard.
     payment_plan_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     payment_plan_created: bool = False

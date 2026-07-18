@@ -2,7 +2,7 @@
 parameters, using the mocked pool/connection from conftest.py -- no real
 Postgres involved."""
 
-from datetime import date, datetime
+from datetime import date
 
 from app import db
 
@@ -33,17 +33,6 @@ async def test_create_payment_plan_writes_plan_and_updates_status(patched_db_poo
     assert plan_call.args[1:] == (42, 5, 100.0, 500.0, date(2026, 7, 10))
     assert "PAYMENT_PLAN_ACTIVE" in status_call.args[0]
     assert status_call.args[1] == 42
-
-
-async def test_create_scheduled_callback(patched_db_pool, mock_db_conn):
-    when = datetime(2026, 7, 4, 18, 0)
-    await db.create_scheduled_callback(42, when)
-
-    mock_db_conn.execute.assert_awaited_once()
-    query, account_id, callback_time = mock_db_conn.execute.call_args.args
-    assert "INSERT INTO scheduled_callbacks" in query
-    assert account_id == 42
-    assert callback_time == when
 
 
 async def test_log_communication(patched_db_pool, mock_db_conn):

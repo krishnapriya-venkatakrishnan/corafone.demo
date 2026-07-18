@@ -1,12 +1,12 @@
 # Corafone Voice Gateway
 
-An AI voice agent that makes outbound debt-collection calls — holds a real spoken conversation, offers a settlement or a payment plan, books callbacks, and grades its own compliance after every call. Built on FastAPI, Deepgram's Voice Agent API, and OpenAI, with a Supabase backend and a TypeScript dashboard for oversight.
+An AI voice agent that makes outbound debt-collection calls — holds a real spoken conversation, offers a settlement or a payment plan, and grades its own compliance after every call. Built on FastAPI, Deepgram's Voice Agent API, and OpenAI, with a Supabase backend and a TypeScript dashboard for oversight.
 
 ## Features
 
 - **Live voice conversation** — real-time mic-in/speech-out over a WebSocket, full barge-in support (interrupt the agent mid-sentence and it stops instantly).
-- **Agentic actions, not just talk** — the agent can settle the balance in full, set up a 2-6 month installment plan, or schedule a callback, each backed by a real, idempotency-guarded database write.
-- **Deterministic compliance gates** — a stop-contact request permanently blocks future auto-dialing (`requires_manual_review`), and accounts are never called before a promised callback or payment due date — both enforced in code, not left to an LLM's judgment.
+- **Agentic actions, not just talk** — the agent can settle the balance in full or set up a 2-6 month installment plan, each backed by a real, idempotency-guarded database write. It has no callback-scheduling tool: a request to be called back later is handled entirely in conversation (acknowledged, redirected back to settlement/payment plan), never as a booked action.
+- **Deterministic compliance gates** — a stop-contact request permanently flags the account for manual review (`requires_manual_review`), set in code, not left to an LLM's judgment (see Known limitations for what currently reads that flag).
 - **Post-call compliance audit** — every transcript is graded by an LLM judge for the Mini-Miranda disclosure, identity verification, hallucinated terms, prohibited conduct, and tone.
 - **Scenario test suite** — seven adversarial conversation scenarios (happy path, vague agreement, wrong person, stop-contact request, etc.), run against the real prompt and tools with a mocked DB, graded by structural checks and an LLM judge. Runnable from the dashboard or CI.
 - **Dashboard** — account status, compliance rollup, call history with full transcripts, active payment plans/callbacks, and a live scenario-test runner.
@@ -100,7 +100,9 @@ erDiagram
     }
 ```
 
-The full-conversation transcript itself lives outside Postgres, as a text file in Supabase Storage (`communications/{account_id}/{call_timestamp}/log.txt`) — `voice_session_metrics.transcript_path` points to it. `communication_logs` holds only one structured line per tool action (settlement charged, callback booked, etc.), not the full dialogue.
+`scheduled_callbacks` is read-only from the live agent's perspective — Cora has no tool to write to it (see Features), so any rows come from seed data or a prior human agent. The dashboard's "Active Commitments" panel and the `/commitments` endpoint still read it.
+
+The full-conversation transcript itself lives outside Postgres, as a text file in Supabase Storage (`communications/{account_id}/{call_timestamp}/log.txt`) — `voice_session_metrics.transcript_path` points to it. `communication_logs` holds only one structured line per tool action (settlement charged, payment plan created, etc.), not the full dialogue.
 
 ## Tech stack
 
@@ -168,7 +170,7 @@ app/
   main.py           FastAPI app + /ws/stream WebSocket route (browser-facing)
   voice_agent.py     Deepgram Voice Agent session, transcript capture, teardown
   config.py          Cora's system prompt, tool schemas, greeting -- the shared "Cora Core"
-  tools.py           Settlement / payment plan / callback tool handlers, idempotency guards
+  tools.py           Settlement / payment plan tool handlers, idempotency guards
   db.py              Supabase Postgres access (asyncpg)
   storage.py         Supabase Storage access (transcripts)
   audit.py           Post-call compliance judge

@@ -49,15 +49,23 @@ SCENARIOS: list[Scenario] = [
         ),
     ),
     Scenario(
-        name="happy_path_callback",
+        name="deflection_callback_request",
         consumer_persona=(
-            "You are Phoebe Buffay. You confirm you are Phoebe when asked. You're in a rush and can't "
-            "talk about payment right now -- ask to be called back at a specific day/time. Keep replies "
+            "You are Phoebe Buffay. You confirm you are Phoebe when asked. You're in a rush and try to "
+            "get off the phone by asking to be called back later at a specific day/time, instead of "
+            "discussing payment now. If the agent asks whether settlement or a payment plan could still "
+            "work before you go, give it one genuine, cooperative answer -- e.g. agree to a payment plan "
+            "or a settlement, on the spot, rather than repeating the callback request. Keep replies "
             "short, like a real phone call." + _END_INSTRUCTION
         ),
         expected_outcome=(
-            "The agent should not pressure the customer to discuss payment right now, should agree to a "
-            "specific callback time, confirm it, and call the callback tool exactly once with that time."
+            "The agent has no callback-scheduling capability, so it should never call any tool as a "
+            "response to the callback request itself, and it should never promise a specific future call "
+            "time or claim to have booked anything. It should acknowledge the request warmly, without "
+            "pressuring the customer, but should steer the conversation back to whether settlement or a "
+            "payment plan could still work today rather than treating the callback request as a resolved "
+            "outcome or letting the call end there. A settlement or payment-plan tool call is fine, but "
+            "only after the customer explicitly agrees to it in that redirected exchange."
         ),
     ),
     Scenario(

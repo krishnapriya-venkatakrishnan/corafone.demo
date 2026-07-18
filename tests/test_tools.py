@@ -29,28 +29,6 @@ async def test_settlement_charges_once_then_returns_cached_result(session):
     assert responses[1]["transaction_id"] == responses[0]["transaction_id"]
 
 
-async def test_callback_scheduled_once_then_returns_cached_result(session):
-    with patch("app.db.create_scheduled_callback", new=AsyncMock()) as create_cb, \
-         patch("app.db.log_communication", new=AsyncMock()):
-        await tools.handle_function_call_request(
-            make_function_call("schedule_callback", {"callback_datetime": "2026-07-04T18:00:00"}),
-            session,
-        )
-        await tools.handle_function_call_request(
-            make_function_call(
-                "schedule_callback", {"callback_datetime": "2026-07-05T09:00:00"}, "call_2"
-            ),
-            session,
-        )
-
-    assert create_cb.await_count == 1
-    responses = [
-        json.loads(r.content) for r in session.agent_connection.sent_function_call_responses
-    ]
-    assert responses[0]["status"] == "scheduled"
-    assert responses[1]["status"] == "already_scheduled"
-
-
 async def test_payment_plan_created_once_then_returns_cached_result(session):
     with patch("app.db.create_payment_plan", new=AsyncMock()) as create_plan, \
          patch("app.db.log_communication", new=AsyncMock()):

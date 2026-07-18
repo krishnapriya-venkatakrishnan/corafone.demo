@@ -3,7 +3,7 @@ connection pool for the process lifetime; nothing here knows about Deepgram
 or the agent protocol -- see app/voice_agent.py for that side."""
 
 import logging
-from datetime import date, datetime
+from datetime import date
 
 import asyncpg
 
@@ -59,15 +59,6 @@ async def create_payment_plan(
                 "UPDATE accounts SET status = 'PAYMENT_PLAN_ACTIVE' WHERE account_id = $1",
                 account_id,
             )
-
-
-async def create_scheduled_callback(account_id: int, callback_time: datetime) -> None:
-    async with _pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO scheduled_callbacks (account_id, callback_time) VALUES ($1, $2)",
-            account_id,
-            callback_time,
-        )
 
 
 async def log_communication(account_id: int, content: str) -> None:
