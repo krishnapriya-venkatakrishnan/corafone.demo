@@ -25,9 +25,11 @@ async def test_barge_in_increments_counter_and_appends_log(session):
 async def test_conversation_text_appends_log_and_tracks_user_turn(session):
     voice_agent.on_agent_message(_event(type="ConversationText", role="assistant", content="hi"), session)
     assert session.last_user_turn_at is None  # only user turns start the latency clock
+    assert session.turn_id == 0  # only user turns bump the turn counter
 
     voice_agent.on_agent_message(_event(type="ConversationText", role="user", content="yes"), session)
     assert session.last_user_turn_at is not None
+    assert session.turn_id == 1
     assert session.log_lines == [
         session.log_lines[0],  # assistant line (format checked in test_session.py)
         session.log_lines[1],
@@ -57,7 +59,7 @@ async def test_routine_events_are_not_curated_into_the_transcript(session):
 
 async def test_teardown_derives_disposition_and_writes_metrics(session):
     session.log_lines = ["2026-01-01 00:00:00 [assistant] hi"]
-    session.settlement_settled = True
+    session.agreement_disposition = "SETTLED"
     session.agent_listen_task = None
     session.agent_context = None
 

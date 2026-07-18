@@ -46,7 +46,7 @@ def fake_websocket() -> FakeWebSocket:
 def session(fake_websocket) -> CallSession:
     """A CallSession wired to a fake websocket/agent connection, ready to
     have tool calls or voice_agent events dispatched at it."""
-    s = CallSession(websocket=fake_websocket, account_id=42)
+    s = CallSession(websocket=fake_websocket, account_id=42, account_balance=500.0)
     s.agent_connection = FakeAgentConnection()
     return s
 

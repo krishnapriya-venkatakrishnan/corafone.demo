@@ -92,7 +92,11 @@ async def handle_audio_stream(websocket: WebSocket) -> None:
 
         session.account_id = account["account_id"]
         session.customer_name = account["customer_name"]
-        session.account_balance = float(account["current_balance"])
+
+        # Idempotent demo reset, before the greeting -- see db.reset_demo_account.
+        await db.reset_demo_account(session.account_id, phone_number)
+        account = await db.get_account_by_id(session.account_id)
+        session.account_balance = account["current_balance"]  # Decimal, straight from asyncpg
 
         await initialize_agent_connection(session)
         logger.info("Awaiting incoming browser microphone stream packets...")

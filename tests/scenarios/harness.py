@@ -41,8 +41,8 @@ def _to_openai_tool(flat_schema: dict) -> dict:
 
 
 _TOOLS = [
-    _to_openai_tool(config.build_settlement_function_schema(TEST_ACCOUNT_BALANCE)),
-    _to_openai_tool(config.OFFER_PAYMENT_PLAN_FUNCTION_SCHEMA),
+    _to_openai_tool(config.VALIDATE_CONSUMER_PROPOSAL_FUNCTION_SCHEMA),
+    _to_openai_tool(config.RECORD_AGREEMENT_FUNCTION_SCHEMA),
 ]
 
 

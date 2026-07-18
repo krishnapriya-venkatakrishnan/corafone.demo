@@ -4,9 +4,12 @@ import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from fastapi import WebSocket
+
+from .negotiation import NegotiationState, Verdict
 
 
 @dataclass
@@ -24,21 +27,37 @@ class CallSession:
     # call is for -- never taken from the LLM (see app/tools.py for why).
     account_id: int | None = None
     customer_name: str | None = None
-    account_balance: float | None = None
+    # asyncpg returns NUMERIC columns as Decimal natively -- app/main.py
+    # assigns account["current_balance"] straight through, no float cast,
+    # so this is never a lossy float round-trip on money.
+    account_balance: Decimal | None = None
 
-    # Settlement idempotency guard (only charge once per call).
-    settlement_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    settlement_settled: bool = False
-    settlement_transaction_id: str | None = None
-    settlement_amount: float | None = None
+    # Owned per app/negotiation.py's NegotiationState contract -- persists
+    # for the whole call, mutated by app/negotiation.py's validate_proposal.
+    negotiation_state: NegotiationState = field(default_factory=NegotiationState)
 
-    # Payment-plan idempotency guard.
-    payment_plan_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    payment_plan_created: bool = False
-    payment_plan_id: str | None = None
-    payment_plan_installments: int | None = None
-    payment_plan_amount_per_installment: float | None = None
-    payment_plan_start_date: str | None = None
+    # Bumped once per new customer utterance (app/voice_agent.py's
+    # ConversationText handling) -- the turn boundary negotiation.py itself
+    # has no way to see. Memoizes validate_consumer_proposal so a duplicate
+    # tool call within one reasoning turn returns the cached verdict instead
+    # of re-invoking the validator and re-spending the concession gate.
+    turn_id: int = 0
+    cached_validation_turn: int | None = None
+    cached_validation_key: tuple | None = None
+    cached_validation_verdict: Verdict | None = None
+
+    # The turn in which the concession gate last fired (COUNTER because
+    # locked), and that verdict -- sibling to cached_validation_turn, but
+    # deliberately separate: a second, *different* discount proposal within
+    # the same turn must still be treated as locked, even though
+    # negotiation_state itself now reads "unlocked" from the first call.
+    gate_spent_turn: int | None = None
+    gate_verdict_this_turn: Verdict | None = None
+
+    # Agreement idempotency guard (record at most once per call).
+    agreement_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    agreement_recorded: bool = False
+    agreement_disposition: str | None = None  # "SETTLED" or "PAYMENT_PLAN_ACTIVE", set on success
 
     # Deepgram Voice Agent connection, opened on connect.
     agent_context: Any = None

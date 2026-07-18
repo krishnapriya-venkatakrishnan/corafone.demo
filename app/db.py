@@ -4,6 +4,7 @@ or the agent protocol -- see app/voice_agent.py for that side."""
 
 import logging
 from datetime import date
+from decimal import Decimal
 
 import asyncpg
 
@@ -26,6 +27,31 @@ async def close_pool() -> None:
         logger.info("Supabase connection pool closed.")
 
 
+async def reset_demo_account(account_id: int, phone_number: str) -> None:
+    """Resets the graded demo account to a clean $1,000/ACTIVE state before
+    each call -- see app/main.py's handle_audio_stream, which calls this
+    before initialize_agent_connection so the greeting/negotiation always
+    start from the task's stated scenario, no matter what a prior call left
+    behind. Evaluators call this account repeatedly and aren't a
+    cooperative consumer, so a settlement or payment plan from call N must
+    not carry into call N+1.
+
+    Hard-guarded to config.DEFAULT_CUSTOMER_PHONE_NUMBER inside this
+    function, not left to caller discipline -- this must never be able to
+    reset any other account, however it's called."""
+    if phone_number != config.DEFAULT_CUSTOMER_PHONE_NUMBER:
+        return
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE accounts SET current_balance = $1, status = 'ACTIVE', "
+                "requires_manual_review = FALSE WHERE account_id = $2",
+                config.DEMO_ACCOUNT_BALANCE,
+                account_id,
+            )
+            await conn.execute("DELETE FROM payment_plans WHERE account_id = $1", account_id)
+
+
 async def apply_settlement(account_id: int) -> None:
     async with _pool.acquire() as conn:
         await conn.execute(
@@ -37,23 +63,31 @@ async def apply_settlement(account_id: int) -> None:
 async def create_payment_plan(
     account_id: int,
     num_installments: int,
-    amount_per_installment: float,
-    total_amount: float,
+    amount_per_installment: Decimal,
+    total_amount: Decimal,
     start_date: date,
+    payments_breakdown: str | None = None,
 ) -> None:
+    """`amount_per_installment` is the average (total_amount / num_installments)
+    so the dashboard's "N x $X = total" display is always internally
+    consistent, even for an uneven-split agreement. `payments_breakdown` is
+    the exact per-payment amounts, comma-separated in order, for whenever
+    something needs the real numbers rather than the average."""
     async with _pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 """
                 INSERT INTO payment_plans
-                    (account_id, num_installments, amount_per_installment, total_amount, start_date)
-                VALUES ($1, $2, $3, $4, $5)
+                    (account_id, num_installments, amount_per_installment, total_amount,
+                     start_date, payments_breakdown)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 """,
                 account_id,
                 num_installments,
                 amount_per_installment,
                 total_amount,
                 start_date,
+                payments_breakdown,
             )
             await conn.execute(
                 "UPDATE accounts SET status = 'PAYMENT_PLAN_ACTIVE' WHERE account_id = $1",

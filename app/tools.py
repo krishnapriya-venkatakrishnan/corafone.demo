@@ -1,140 +1,193 @@
-"""Backends for the two agent tools (settlement, payment plans) and their
-dispatch from Deepgram's FunctionCallRequest.
+"""Backends for the two agent tools (validate_consumer_proposal,
+record_agreement) and their dispatch from Deepgram's FunctionCallRequest.
 
-Each `process_*`/`schedule_*`/`create_*` function persists its outcome to
-Supabase (app/db.py). The `_execute_*_tool_call` wrappers add idempotency
-(run at most once per call) on top. Account identity (`session.account_id`)
-is always resolved server-side at call start, never supplied by the LLM --
-a phone call gives the model no reliable way to know its own database id.
+Neither tool decides what's acceptable -- that's app/negotiation.py's job
+entirely. This module's role is the boundary: convert the model's raw tool
+arguments (strings, floats, whatever the LLM actually sent) into the
+Decimal/date/enum types negotiation.py expects, treating anything
+malformed the same way negotiation.py itself does -- pass it through
+rather than raise, so `_is_sane` rejects it gracefully instead of this
+module crashing first. Account identity (`session.account_id`) is always
+resolved server-side at call start, never supplied by the LLM -- a phone
+call gives the model no reliable way to know its own database id.
 """
 
+import dataclasses
 import json
 import logging
-import uuid
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from deepgram.agent.v1.types import AgentV1SendFunctionCallResponse
 
-from . import db
+from . import db, negotiation
 from .session import CallSession, append_call_log
 
 logger = logging.getLogger("corafone")
 
 
-# --- Settlement ---
-async def process_account_settlement(account_id: int, amount: float) -> dict:
-    """Charges the account for an agreed lump-sum settlement."""
-    logger.info("Ledger: charging account %s for $%.2f...", account_id, amount)
-    await db.apply_settlement(account_id)
-    transaction_id = f"tx_corafone_{uuid.uuid4().hex[:12]}"
-    await db.log_communication(
-        account_id, f"Settlement processed: {transaction_id}, ${amount:.2f} charged."
-    )
-    logger.info("Ledger: SUCCESS -- $%.2f deducted, account %s marked SETTLED.", amount, account_id)
+# --- Defensive conversion: garbage in, a value `_is_sane` will reject, not
+# an exception this module has to catch itself. ---
+def _safe_decimal(value):
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return value
+
+
+def _safe_int(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def _safe_date(value):
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _safe_cadence(value):
+    try:
+        return negotiation.Cadence(value)
+    except ValueError:
+        return value
+
+
+def _offer_to_dict(offer: negotiation.Offer) -> dict:
     return {
-        "status": "success",
-        "transaction_id": transaction_id,
-        "amount_charged": amount,
-        "balance_remaining": 0.00,
-        "account_status": "CLOSED_SETTLED",
+        "tier": offer.tier.value,
+        "total": str(offer.total),
+        "payments": [str(p) for p in offer.payments],
+        "dates": [d.isoformat() for d in offer.dates],
+        "cadence": offer.cadence.value,
     }
 
 
-async def _execute_settlement_tool_call(args: dict, session: CallSession) -> dict:
-    async with session.settlement_lock:
-        if session.settlement_settled:
-            logger.info("Settlement already processed this call.")
-            return {
-                "status": "already_settled",
-                "transaction_id": session.settlement_transaction_id,
-                "amount_charged": session.settlement_amount,
-                "balance_remaining": 0.00,
-                "account_status": "CLOSED_SETTLED",
-            }
+def _verdict_to_tool_result(verdict: negotiation.Verdict) -> dict:
+    """Never includes `violations` -- those are log-only, see
+    negotiation.Verdict's docstring; the model must never see or speak them."""
+    offer = verdict.accepted_offer or verdict.counter_offer
+    return {
+        "decision": verdict.decision,
+        "reason": verdict.reason,
+        "offer": _offer_to_dict(offer) if offer else None,
+    }
 
-        result = await process_account_settlement(session.account_id, args["amount"])
-        session.settlement_settled = True
-        session.settlement_transaction_id = result["transaction_id"]
-        session.settlement_amount = result["amount_charged"]
-        append_call_log(
-            session, "Billing",
-            f"Settlement processed: {result['transaction_id']}, ${result['amount_charged']:.2f} charged.",
+
+def _proposal_from_args(args: dict) -> negotiation.Proposal:
+    return negotiation.Proposal(
+        total=_safe_decimal(args.get("total_amount")),
+        number_of_payments=_safe_int(args.get("number_of_payments")),
+        cadence=_safe_cadence(args.get("cadence")),
+        first_payment_date=_safe_date(args.get("first_payment_date")),
+    )
+
+
+# --- validate_consumer_proposal: read-only, callable repeatedly ---
+async def _execute_validate_proposal_tool_call(args: dict, session: CallSession) -> dict:
+    proposal = _proposal_from_args(args)
+    key = (proposal.total, proposal.number_of_payments, proposal.cadence, proposal.first_payment_date)
+
+    if session.cached_validation_turn == session.turn_id and session.cached_validation_key == key:
+        logger.info("Duplicate tool call this turn -- returning the cached verdict.")
+        return _verdict_to_tool_result(session.cached_validation_verdict)
+
+    balance = Decimal(str(session.account_balance))
+    is_discount_ask = isinstance(proposal.total, Decimal) and proposal.total < balance
+
+    if session.gate_spent_turn == session.turn_id and is_discount_ask:
+        # The gate already fired once this turn -- a second, *different*
+        # discount ask in the same reasoning turn must not benefit from
+        # negotiation_state now reading "unlocked" from that first call.
+        # The consumer only said one thing this turn; reuse that answer.
+        logger.info("Gate already spent this turn -- reusing this turn's gate verdict.")
+        verdict = session.gate_verdict_this_turn
+    else:
+        call_date = session.call_started_at.date()
+        counters_before = session.negotiation_state.discount_counters_issued
+        verdict = negotiation.validate_proposal(balance, proposal, call_date, session.negotiation_state)
+        if session.negotiation_state.discount_counters_issued > counters_before:
+            session.gate_spent_turn = session.turn_id
+            session.gate_verdict_this_turn = verdict
+
+    session.cached_validation_turn = session.turn_id
+    session.cached_validation_key = key
+    session.cached_validation_verdict = verdict
+    return _verdict_to_tool_result(verdict)
+
+
+# --- record_agreement: the single write, re-validated server-side ---
+async def _persist_agreement(account_id: int, offer: negotiation.Offer) -> None:
+    """A single payment closes the account now (mirrors the mock ledger's
+    old settlement behavior); more than one is a schedule of future
+    payments (mirrors the old payment-plan behavior). `amount_per_installment`
+    is the average, not the first payment, so "N x $X" always equals the
+    total even for an uneven split; `payments_breakdown` keeps the exact
+    amounts alongside it."""
+    if len(offer.payments) == 1:
+        await db.apply_settlement(account_id)
+    else:
+        average = (offer.total / len(offer.payments)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        breakdown = ",".join(str(p) for p in offer.payments)
+        await db.create_payment_plan(
+            account_id, len(offer.payments), average, offer.total, offer.dates[0], breakdown
         )
-        return result
-
-
-# --- Payment plans ---
-async def create_installment_payment_plan(
-    account_id: int, num_installments: int, amount_per_installment: float, start_date: str
-) -> dict:
-    """Sets up a recurring installment plan in the billing system. `start_date`
-    is an absolute YYYY-MM-DD string (the LLM resolves it from today's date +
-    the customer's own words -- see config.build_system_prompt rule 4)."""
-    parsed_start_date = date.fromisoformat(start_date)
-    logger.info(
-        "Billing: creating %d-installment plan of $%.2f/mo (starting %s) for account %s...",
-        num_installments, amount_per_installment, parsed_start_date, account_id,
-    )
-    total_amount = round(num_installments * amount_per_installment, 2)
-    await db.create_payment_plan(
-        account_id, num_installments, amount_per_installment, total_amount, parsed_start_date
-    )
-    plan_id = f"plan_corafone_{uuid.uuid4().hex[:12]}"
     await db.log_communication(
         account_id,
-        f"Payment plan created: {plan_id}, ${total_amount:.2f} total across "
-        f"{num_installments} payments starting {parsed_start_date.isoformat()}.",
+        f"Agreement recorded ({offer.tier.value}): ${offer.total} total across "
+        f"{len(offer.payments)} payment(s) starting {offer.dates[0].isoformat()}.",
     )
-    logger.info(
-        "Billing: SUCCESS -- plan %s created, $%.2f total across %d payments starting %s.",
-        plan_id, total_amount, num_installments, parsed_start_date,
-    )
-    return {
-        "status": "plan_created",
-        "plan_id": plan_id,
-        "num_installments": num_installments,
-        "amount_per_installment": amount_per_installment,
-        "total_amount": total_amount,
-        "start_date": parsed_start_date.isoformat(),
-        "account_status": "PAYMENT_PLAN_ACTIVE",
-    }
 
 
-async def _execute_payment_plan_tool_call(args: dict, session: CallSession) -> dict:
-    async with session.payment_plan_lock:
-        if session.payment_plan_created:
-            logger.info("Payment plan already created this call.")
+async def _execute_record_agreement_tool_call(args: dict, session: CallSession) -> dict:
+    async with session.agreement_lock:
+        if session.agreement_recorded:
+            logger.info("Agreement already recorded this call.")
+            return {"status": "already_recorded"}
+
+        proposal = _proposal_from_args(args)
+        balance = Decimal(str(session.account_balance))
+        call_date = session.call_started_at.date()
+
+        # Re-validate against a *copy* of the negotiation state: a rejected
+        # write must not spend the concession gate. If it mutated the live
+        # state, a hallucinated or malformed record_agreement call would
+        # silently unlock the next real discount request for free.
+        state_for_check = dataclasses.replace(session.negotiation_state)
+        verdict = negotiation.validate_proposal(balance, proposal, call_date, state_for_check)
+
+        if verdict.decision != "ACCEPT":
+            logger.warning("record_agreement refused: proposed terms did not validate.")
             return {
-                "status": "already_created",
-                "plan_id": session.payment_plan_id,
-                "num_installments": session.payment_plan_installments,
-                "amount_per_installment": session.payment_plan_amount_per_installment,
-                "start_date": session.payment_plan_start_date,
+                "status": "rejected",
+                "reason": verdict.reason,
+                "offer": _offer_to_dict(verdict.counter_offer) if verdict.counter_offer else None,
             }
 
-        result = await create_installment_payment_plan(
-            session.account_id,
-            args["num_installments"],
-            args["amount_per_installment"],
-            args["start_date"],
-        )
-        session.payment_plan_created = True
-        session.payment_plan_id = result["plan_id"]
-        session.payment_plan_installments = result["num_installments"]
-        session.payment_plan_amount_per_installment = result["amount_per_installment"]
-        session.payment_plan_start_date = result["start_date"]
+        offer = verdict.accepted_offer
+        await _persist_agreement(session.account_id, offer)
+
+        session.agreement_recorded = True
+        session.agreement_disposition = "SETTLED" if len(offer.payments) == 1 else "PAYMENT_PLAN_ACTIVE"
         append_call_log(
             session, "Billing",
-            f"Payment plan created: {result['plan_id']}, ${result['total_amount']:.2f} total across "
-            f"{result['num_installments']} payments starting {result['start_date']}.",
+            f"Agreement recorded: {offer.tier.value}, ${offer.total} total across "
+            f"{len(offer.payments)} payment(s) starting {offer.dates[0].isoformat()}.",
         )
-        return result
+
+        return {"status": "success", **_offer_to_dict(offer)}
 
 
 # --- Dispatch ---
 _FUNCTION_CALL_HANDLERS = {
-    "process_account_settlement": _execute_settlement_tool_call,
-    "offer_payment_plan": _execute_payment_plan_tool_call,
+    "validate_consumer_proposal": _execute_validate_proposal_tool_call,
+    "record_agreement": _execute_record_agreement_tool_call,
 }
 
 
@@ -147,8 +200,8 @@ async def handle_function_call_request(message, session: CallSession) -> None:
             logger.warning("Ignoring unknown function call request: %s", function_call.name)
             continue
 
-        args = json.loads(function_call.arguments)
         try:
+            args = json.loads(function_call.arguments)
             result = await handler(args, session)
         except Exception:
             logger.exception("Tool call '%s' failed.", function_call.name)

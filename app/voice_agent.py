@@ -67,6 +67,10 @@ def on_agent_message(message: Any, session: CallSession) -> None:
         append_call_log(session, message.role, message.content)
         if message.role == "user":
             session.last_user_turn_at = datetime.now()
+            # A new customer utterance is a new conversational turn -- see
+            # NegotiationState's docstring and app/tools.py's validation
+            # cache, which this invalidates.
+            session.turn_id += 1
         return
 
     if message_type == "AgentStartedSpeaking":
@@ -133,8 +137,8 @@ async def initialize_agent_connection(session: CallSession) -> None:
                     provider={"type": "open_ai", "model": config.OPENAI_MODEL},
                     prompt=config.build_system_prompt(session.customer_name, session.account_balance),
                     functions=[
-                        config.build_settlement_function_schema(session.account_balance),
-                        config.OFFER_PAYMENT_PLAN_FUNCTION_SCHEMA,
+                        config.VALIDATE_CONSUMER_PROPOSAL_FUNCTION_SCHEMA,
+                        config.RECORD_AGREEMENT_FUNCTION_SCHEMA,
                     ],
                 ),
                 speak=SpeakSettingsV1(
@@ -169,12 +173,7 @@ async def teardown_session(session: CallSession) -> None:
             session.error_count += 1
 
     if session.account_id is not None:
-        if session.settlement_settled:
-            disposition_code = "SETTLED"
-        elif session.payment_plan_created:
-            disposition_code = "PAYMENT_PLAN_ACTIVE"
-        else:
-            disposition_code = "NO_ACTION"
+        disposition_code = session.agreement_disposition or "NO_ACTION"
 
         total_duration_seconds = int((datetime.now() - session.call_started_at).total_seconds())
         avg_latency_ms = (
