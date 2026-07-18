@@ -59,8 +59,8 @@ async def _handle_audio_frame(audio_data: bytes, session: CallSession) -> None:
 
 
 async def _handle_text_frame(raw_text: str, session: CallSession) -> None:
-    """Handles the `mock_transcript` simulation path (see test_stream.py),
-    forwarded as Deepgram's native "simulate spoken input" message."""
+    """Handles the `mock_transcript` simulation path, forwarded as Deepgram's
+    native "simulate spoken input" message."""
     try:
         data = json.loads(raw_text)
     except json.JSONDecodeError:
