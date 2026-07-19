@@ -1,7 +1,30 @@
 @import "tailwindcss";
 
+@theme {
+  --color-periwinkle: #7C7CE0;
+  --color-periwinkle-soft: #A5A6F0;
+  --color-periwinkle-tint: #EEEEFC;
+
+  --color-pass-bg: #E8F5EC;
+  --color-pass-fg: #1B6B3A;
+  --color-fail-bg: #FDEAEA;
+  --color-fail-fg: #A32A2A;
+  --color-idle-bg: #F2F2F2;
+  --color-idle-fg: #555555;
+  --color-info-bg: #E8F1FA;
+  --color-info-fg: #22577A;
+}
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Same recipe as frontend/style.css's idle call circle, so the pre-call
+   state looks like one system across both apps. */
+.idle-call-gradient {
+  background: conic-gradient(from 0deg, var(--color-periwinkle), #F5D6E0, #CDEFDD, #FCE7CE, var(--color-periwinkle));
+  filter: blur(18px);
+  opacity: 0.35;
 }

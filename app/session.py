@@ -69,9 +69,10 @@ class CallSession:
     call_started_at: datetime = field(default_factory=datetime.now)
     log_lines: list[str] = field(default_factory=list)
 
-    # Telemetry, written to voice_session_metrics on teardown.
+    # Telemetry, written to voice_session_metrics on teardown. Each sample
+    # is Deepgram's own LatencyReport.total_latency for a turn (see
+    # app/voice_agent.py's on_agent_message), not locally measured.
     barge_in_count: int = 0
-    last_user_turn_at: datetime | None = None
     latency_samples_ms: list[float] = field(default_factory=list)
     error_count: int = 0
 

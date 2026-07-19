@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "rm -rf public/call && cp -r ../frontend public/call",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview"

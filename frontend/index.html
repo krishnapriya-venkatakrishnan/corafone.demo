@@ -10,28 +10,23 @@
 <link rel="stylesheet" href="style.css" />
 </head>
 
-<body class="bg-neutral-950 text-neutral-100 min-h-screen flex items-center justify-center font-sans antialiased overflow-hidden">
+<body class="bg-white text-black min-h-screen flex items-center justify-center font-sans antialiased overflow-hidden">
 
   <!-- Ambient background glow -->
   <div class="pointer-events-none fixed inset-0 flex items-center justify-center">
-    <div class="w-[36rem] h-[36rem] bg-emerald-600/10 rounded-full blur-3xl"></div>
+    <div class="w-[36rem] h-[36rem] bg-[var(--periwinkle-tint)] rounded-full blur-3xl"></div>
   </div>
 
   <main class="relative w-full max-w-sm mx-auto flex flex-col items-center gap-10 px-6 py-12">
 
-    <!-- Brand -->
-    <div class="text-center space-y-1">
-      <h1 class="text-2xl font-semibold tracking-tight text-neutral-50">Corafone</h1>
-      <p class="text-sm text-neutral-500">Voice Agent</p>
-    </div>
 
     <!-- Account picker: pick which demo account to call as (hidden when
          deep-linked from the dashboard's call modal -- that already shows
          who's being called, so this would just be a redundant repeat). -->
     <div id="accountPickerSection" class="w-full space-y-2">
-      <p class="text-xs text-neutral-600 text-center">Pick an account to call</p>
+      <p class="text-xs text-neutral-500 text-center">Pick an account to call</p>
       <div id="accountRow" class="w-full flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
-        <p class="text-xs text-neutral-600 text-center py-2">Loading accounts…</p>
+        <p class="text-xs text-neutral-500 text-center py-2">Loading accounts…</p>
       </div>
     </div>
 
@@ -41,14 +36,25 @@
         <span id="statusDot" class="w-2 h-2 rounded-full bg-neutral-600 transition-colors duration-300"></span>
         <span id="statusText">Disconnected</span>
       </div>
-      <div id="timer" class="text-3xl font-mono tabular-nums text-neutral-200 tracking-wider">00:00</div>
+      <div id="timer" class="text-3xl font-mono tabular-nums text-black tracking-wider" style="font-variant-numeric: tabular-nums;">00:00</div>
     </div>
 
-    <!-- Mic Button -->
-    <div class="relative flex items-center justify-center w-44 h-44">
-      <!-- Animated rings, only shown while connected -->
-      <div id="ring1" class="hidden absolute inset-0 rounded-full bg-emerald-500/30 pulse-ring"></div>
-      <div id="ring2" class="hidden absolute inset-0 rounded-full bg-emerald-500/20 pulse-ring-fast"></div>
+    <!-- Mic Button + call circle -->
+    <div class="relative flex items-center justify-center w-52 h-52">
+      <!-- Always-on, dim ambient circle: the resting state before/between calls. -->
+      <div class="absolute inset-0 rounded-full overflow-hidden">
+        <div class="absolute inset-[-25%] call-gradient call-gradient-idle"></div>
+      </div>
+
+      <!-- Animated rings: app.js toggles the "hidden" class on these two ids
+           whenever a call is live -- id and that toggle behavior are untouched,
+           only their visual content (the gradient layers) changed. -->
+      <div id="ring1" class="hidden absolute inset-0 rounded-full overflow-hidden">
+        <div class="absolute inset-[-25%] call-gradient call-gradient-rotate"></div>
+      </div>
+      <div id="ring2" class="hidden absolute inset-0 rounded-full overflow-hidden">
+        <div class="absolute inset-[-25%] call-gradient call-gradient-breathe"></div>
+      </div>
 
       <button
         id="micButton"
@@ -56,8 +62,8 @@
         aria-label="Connect call"
         class="relative z-10 w-28 h-28 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center
                text-neutral-300 shadow-xl transition-all duration-300 ease-out
-               hover:bg-neutral-700 hover:scale-105 active:scale-95
-               focus:outline-none focus:ring-2 focus:ring-emerald-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
+               hover:scale-105 active:scale-95
+               focus:outline-none focus:ring-2 focus:ring-[var(--periwinkle-soft)] disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <!-- Mic icon (SVG, swaps to a "hang up" icon while connected) -->
         <svg id="micIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="w-10 h-10">
@@ -69,12 +75,12 @@
       </button>
     </div>
 
-    <p id="helperText" class="text-xs text-neutral-600 text-center max-w-[220px]">
+    <p id="helperText" class="text-xs text-neutral-500 text-center max-w-55">
       Tap the microphone to start a live call with Cora.
     </p>
 
     <!-- Inline error banner (hidden unless something goes wrong) -->
-    <div id="errorBanner" class="hidden w-full text-center text-xs text-red-400 bg-red-950/40 border border-red-900/60 rounded-lg px-3 py-2"></div>
+    <div id="errorBanner" class="hidden w-full text-center text-xs text-[var(--fail-fg)] bg-[var(--fail-bg)] border border-[#F3B8B8] rounded-lg px-3 py-2"></div>
   </main>
 
   <script>

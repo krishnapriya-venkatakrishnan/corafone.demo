@@ -24,11 +24,9 @@ async def test_barge_in_increments_counter_and_appends_log(session):
 
 async def test_conversation_text_appends_log_and_tracks_user_turn(session):
     voice_agent.on_agent_message(_event(type="ConversationText", role="assistant", content="hi"), session)
-    assert session.last_user_turn_at is None  # only user turns start the latency clock
     assert session.turn_id == 0  # only user turns bump the turn counter
 
     voice_agent.on_agent_message(_event(type="ConversationText", role="user", content="yes"), session)
-    assert session.last_user_turn_at is not None
     assert session.turn_id == 1
     assert session.log_lines == [
         session.log_lines[0],  # assistant line (format checked in test_session.py)
@@ -36,18 +34,26 @@ async def test_conversation_text_appends_log_and_tracks_user_turn(session):
     ]
 
 
-async def test_agent_started_speaking_records_latency_sample_once(session):
-    voice_agent.on_agent_message(_event(type="ConversationText", role="user", content="yes"), session)
-    await asyncio.sleep(0.03)
-    voice_agent.on_agent_message(_event(type="AgentStartedSpeaking"), session)
+async def test_latency_report_dict_records_total_latency_in_ms(session):
+    # Deepgram sends LatencyReport as a plain dict, not a typed object (see
+    # on_agent_message's docstring) -- several partial reports per turn,
+    # only the one carrying total_latency should produce a sample.
+    voice_agent.on_agent_message({"type": "LatencyReport", "ttt_token_latency": 0.2}, session)
+    voice_agent.on_agent_message({"type": "LatencyReport", "ttt_text_latency": 0.21}, session)
+    voice_agent.on_agent_message({"type": "LatencyReport", "tts_latency": 0.05}, session)
+    voice_agent.on_agent_message({"type": "LatencyReport", "total_latency": 0.812}, session)
 
-    assert len(session.latency_samples_ms) == 1
-    assert session.latency_samples_ms[0] >= 20
-    assert session.last_user_turn_at is None
+    assert session.latency_samples_ms == [812.0]
 
-    # A second AgentStartedSpeaking with no intervening user turn adds nothing.
-    voice_agent.on_agent_message(_event(type="AgentStartedSpeaking"), session)
-    assert len(session.latency_samples_ms) == 1
+
+async def test_latency_report_missing_total_latency_records_nothing(session):
+    voice_agent.on_agent_message({"type": "LatencyReport", "ttt_token_latency": 0.2}, session)
+    assert session.latency_samples_ms == []
+
+
+async def test_non_latency_dict_message_is_ignored(session):
+    voice_agent.on_agent_message({"type": "SomethingElse"}, session)
+    assert session.latency_samples_ms == []
 
 
 async def test_routine_events_are_not_curated_into_the_transcript(session):

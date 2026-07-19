@@ -1,20 +1,94 @@
-/* Tailwind covers most styling; these are the pieces it can't express:
-   the pulsing "breathing" ring behind the mic button, and its glow. */
-@keyframes pulse-ring {
-  0%   { transform: scale(0.95); opacity: 0.7; }
-  70%  { transform: scale(1.4);  opacity: 0; }
-  100% { transform: scale(0.95); opacity: 0; }
+/* Tailwind (CDN, JIT) covers layout; this file carries what it can't:
+   theme tokens, the call circle's animated gradient, and light-theme
+   overrides for the dark-theme utility classes app.js applies at runtime
+   (app.js is out of scope for this restyle, so its class names are fixed --
+   these rules just give those exact classes new meaning here). */
+
+:root {
+  --periwinkle: #7C7CE0;
+  --periwinkle-soft: #A5A6F0;
+  --periwinkle-tint: #EEEEFC;
+
+  --pass-bg: #E8F5EC; --pass-fg: #1B6B3A;
+  --fail-bg: #FDEAEA; --fail-fg: #A32A2A;
+  --idle-bg: #F2F2F2; --idle-fg: #555555;
+  --info-bg: #E8F1FA; --info-fg: #22577A; --info-border: #BBDAF0;
+  --warn-fg: #92610A;
 }
-.pulse-ring {
-  animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+
+/* --- The call circle: a slow pastel gradient behind the mic button --- */
+
+.call-gradient {
+  background: conic-gradient(from 0deg, var(--periwinkle), #F5D6E0, #CDEFDD, #FCE7CE, var(--periwinkle));
+  filter: blur(18px);
+  opacity: 0.9;
 }
-.pulse-ring-fast {
-  animation: pulse-ring 1.1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+.call-gradient-idle { opacity: 0.35; }
+.call-gradient-rotate { animation: call-rotate 20s linear infinite; }
+.call-gradient-breathe { animation: call-breathe 4s ease-in-out infinite; }
+
+@keyframes call-rotate {
+  to { transform: rotate(360deg); }
 }
+@keyframes call-breathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.03); }
+}
+
+/* The button's own glow pulse while Cora is actively listening (toggled by
+   app.js via classList -- the class name "breathe" is load-bearing). */
 @keyframes breathe {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45); }
-  50%      { box-shadow: 0 0 0 18px rgba(16, 185, 129, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(124, 124, 224, 0.45); }
+  50%      { box-shadow: 0 0 0 18px rgba(124, 124, 224, 0); }
 }
 .breathe {
   animation: breathe 2s ease-in-out infinite;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .call-gradient-rotate, .call-gradient-breathe, .breathe {
+    animation: none;
+  }
+}
+
+/* --- Light-theme overrides for app.js's runtime class names ---
+   !important throughout: Tailwind's CDN script (Play CDN) regenerates and
+   re-inserts its own <style> tag as new classes appear at runtime, which
+   can land after this stylesheet in the cascade regardless of original
+   <head> order -- equal-specificity rules aren't reliable here, so these
+   are pinned to win outright rather than depending on source order. */
+
+.bg-neutral-900 { background-color: #F7F7FB !important; }
+.border-neutral-800 { border-color: #E5E5E5 !important; }
+
+.bg-neutral-600 { background-color: #C6C6D4 !important; }   /* disconnected dot */
+.bg-amber-400   { background-color: #C98A1B !important; }    /* connecting dot */
+.bg-emerald-400 { background-color: #2F9E5B !important; }    /* listening dot */
+.bg-sky-400     { background-color: #2F6FA3 !important; }    /* speaking dot */
+
+.text-neutral-400 { color: var(--idle-fg) !important; }      /* "Disconnected" */
+.text-amber-300   { color: var(--warn-fg) !important; }       /* "Connecting…" */
+.text-emerald-300 { color: var(--pass-fg) !important; }       /* "Listening…" */
+.text-sky-300     { color: var(--info-fg) !important; }       /* "Cora Speaking…" */
+.text-neutral-200 { color: #000000 !important; }              /* account name */
+.text-red-400     { color: var(--fail-fg) !important; }       /* load-error text */
+
+/* mic button: idle (periwinkle accent) vs. in-call (hang-up, red) */
+.bg-neutral-800   { background-color: var(--periwinkle-tint) !important; }
+.border-neutral-700 { border-color: var(--periwinkle-soft) !important; }
+.text-neutral-300 { color: var(--periwinkle) !important; }
+.bg-red-950       { background-color: var(--fail-bg) !important; }
+.border-red-800   { border-color: #F3B8B8 !important; }
+.text-red-300     { color: var(--fail-fg) !important; }
+
+/* account status badges */
+.bg-emerald-500\/10   { background-color: var(--pass-bg) !important; }
+.border-emerald-500\/20 { border-color: #B9E4C6 !important; }
+.bg-sky-500\/10       { background-color: var(--info-bg) !important; }
+.border-sky-500\/20   { border-color: var(--info-border) !important; }
+.bg-red-500\/10       { background-color: var(--fail-bg) !important; }
+.border-red-500\/20   { border-color: #F3B8B8 !important; }
+
+/* per-account call button */
+.bg-emerald-600 { background-color: var(--periwinkle) !important; }
+.hover\:bg-emerald-500:hover { background-color: var(--periwinkle-soft) !important; }

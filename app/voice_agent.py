@@ -42,10 +42,26 @@ async def send_control_packet(session: CallSession, packet_type: str) -> None:
 
 def on_agent_message(message: Any, session: CallSession) -> None:
     """Deepgram socket event callback. Raw `bytes` are synthesized speech,
-    relayed straight to the browser. Everything else is a JSON event
-    discriminated by `.type`."""
+    relayed straight to the browser. `LatencyReport` arrives as a plain
+    dict, not a typed object -- deepgram-sdk 7.4.0's typed models don't
+    include it, so the SDK's own construct_type() falls back to an untyped
+    dict for this one message, which is why it needs its own branch before
+    the generic attribute-based dispatch below (a dict has no `.type`
+    attribute; `getattr(message, "type", None)` would silently read as
+    None for it). Everything else is a JSON event discriminated by `.type`.
+    """
     if isinstance(message, bytes):
         asyncio.create_task(session.websocket.send_bytes(message))
+        return
+
+    if isinstance(message, dict):
+        # Deepgram reports latency as several partial LatencyReport
+        # messages per turn (ttt_token_latency, ttt_text_latency,
+        # tts_latency, ttt_tool_latency); `total_latency` is the one that
+        # matters here -- Deepgram's own measured gap from the customer's
+        # utterance to Cora's reply, in seconds.
+        if message.get("type") == "LatencyReport" and message.get("total_latency") is not None:
+            session.latency_samples_ms.append(message["total_latency"] * 1000)
         return
 
     message_type = getattr(message, "type", None)
@@ -66,21 +82,10 @@ def on_agent_message(message: Any, session: CallSession) -> None:
         logger.info("[%s]: %s", message.role, message.content)
         append_call_log(session, message.role, message.content)
         if message.role == "user":
-            session.last_user_turn_at = datetime.now()
             # A new customer utterance is a new conversational turn -- see
             # NegotiationState's docstring and app/tools.py's validation
             # cache, which this invalidates.
             session.turn_id += 1
-        return
-
-    if message_type == "AgentStartedSpeaking":
-        # Turn-latency sample: gap between the customer finishing and Cora
-        # starting her reply (telemetry -- see teardown_session below).
-        if session.last_user_turn_at is not None:
-            elapsed_ms = (datetime.now() - session.last_user_turn_at).total_seconds() * 1000
-            session.latency_samples_ms.append(elapsed_ms)
-            session.last_user_turn_at = None
-        logger.info("Voice Agent event: %s", message_type)
         return
 
     if message_type in ("Error", "Warning"):
@@ -90,8 +95,8 @@ def on_agent_message(message: Any, session: CallSession) -> None:
         append_call_log(session, message_type, str(description))
         return
 
-    # Welcome, SettingsApplied, AgentThinking, AgentAudioDone, etc. --
-    # console-only, not curated into the transcript.
+    # Welcome, SettingsApplied, AgentThinking, AgentStartedSpeaking,
+    # AgentAudioDone, etc. -- console-only, not curated into the transcript.
     logger.info("Voice Agent event: %s", message_type)
 
 

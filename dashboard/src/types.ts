@@ -98,3 +98,29 @@ export interface ScenarioDoneEvent {
 }
 
 export type ScenarioEvent = ScenarioResultEvent | ScenarioDoneEvent;
+
+// --- Validator playground ---
+export type Cadence = "once" | "weekly" | "biweekly" | "monthly";
+
+export interface ValidateRequest {
+  total_amount: number;
+  number_of_payments: number;
+  cadence: Cadence;
+  first_payment_date: string; // YYYY-MM-DD
+  discount_already_countered: boolean;
+}
+
+export interface ValidateOffer {
+  tier: string;
+  total: string;
+  payments: string[];
+  dates: string[];
+  cadence: string;
+}
+
+export interface ValidateResponse {
+  decision: "ACCEPT" | "COUNTER";
+  reason: string;
+  offer: ValidateOffer | null;
+  violations: string[];
+}

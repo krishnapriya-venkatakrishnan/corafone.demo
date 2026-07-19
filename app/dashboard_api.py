@@ -6,12 +6,13 @@ in-process rather than reimplementing it or shelling out to pytest."""
 
 import json
 from datetime import date, datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import config, db, storage
+from . import config, db, negotiation, storage, tools
 from .session import CallSession
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -105,6 +106,34 @@ class ScenarioResult(BaseModel):
     transcript: list[str]
 
 
+class ValidateRequest(BaseModel):
+    # Loosely typed on purpose: this mirrors the tool-call boundary in
+    # app/tools.py, where the model's raw arguments are just as likely to be
+    # garbled speech-to-text as clean values. Converted defensively below,
+    # the same way, so malformed input reaches negotiation.py's own
+    # `_is_sane` check instead of failing here first.
+    total_amount: Any
+    number_of_payments: Any
+    cadence: Any
+    first_payment_date: Any
+    discount_already_countered: bool = False
+
+
+class ValidateOffer(BaseModel):
+    tier: str
+    total: str
+    payments: list[str]
+    dates: list[str]
+    cadence: str
+
+
+class ValidateResponse(BaseModel):
+    decision: str
+    reason: str
+    offer: ValidateOffer | None
+    violations: list[str]
+
+
 # --- Read-only endpoints ---
 @router.get("/accounts", response_model=list[AccountSummary])
 async def get_accounts() -> list[dict]:
@@ -143,6 +172,38 @@ async def get_transcript(session_id: str) -> TranscriptResponse:
         raise HTTPException(status_code=404, detail="No transcript found for this call.")
     text = await storage.download_call_log(path)
     return TranscriptResponse(session_id=session_id, transcript=text)
+
+
+@router.post("/validate", response_model=ValidateResponse)
+async def validate(body: ValidateRequest) -> dict:
+    """Pure passthrough to the real negotiation validator: no LLM call, no
+    database access, so it's safe to expose publicly and costs nothing to
+    call. Powers the dashboard's Playground -- unlike the agent-facing tool
+    (app/tools.py), this deliberately returns `violations`: those are
+    withheld from the model, but showing them to an operator is the point.
+    """
+    proposal = tools._proposal_from_args(
+        {
+            "total_amount": body.total_amount,
+            "number_of_payments": body.number_of_payments,
+            "cadence": body.cadence,
+            "first_payment_date": body.first_payment_date,
+        }
+    )
+
+    state = negotiation.NegotiationState(
+        discount_counters_issued=negotiation.MAX_DISCOUNT_COUNTERS if body.discount_already_countered else 0
+    )
+
+    verdict = negotiation.validate_proposal(config.DEMO_ACCOUNT_BALANCE, proposal, date.today(), state)
+    offer = verdict.accepted_offer or verdict.counter_offer
+
+    return {
+        "decision": verdict.decision,
+        "reason": verdict.reason,
+        "offer": tools._offer_to_dict(offer) if offer else None,
+        "violations": verdict.violations,
+    }
 
 
 # --- Live scenario-test runner ---

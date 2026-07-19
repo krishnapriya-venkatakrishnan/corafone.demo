@@ -53,99 +53,106 @@ export default function ScenarioRunner() {
   const anyRunning = runningAll || runningOne !== null;
 
   return (
-    <div className="rounded-xl bg-neutral-900 border border-neutral-800 p-5">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-sm font-medium text-neutral-400">Conversation scenario tests</h2>
-          <p className="text-xs text-neutral-600 mt-0.5">
-            Runs the real prompt and tools against scripted personas -- costs real OpenAI tokens.
-          </p>
+    <div className="max-w-3xl">
+      <p className="text-sm text-neutral-600 mb-5 leading-relaxed">
+        These scenarios run the real system prompt and tools as a text conversation - no Deepgram,
+        and against a mocked database.
+      </p>
+
+      <div className="rounded-xl bg-white border border-neutral-200 p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-sm font-medium text-black">Conversation scenario tests</h2>
+            <p className="text-xs text-neutral-500 mt-0.5">
+              Runs the real prompt and tools against scripted personas -- costs real OpenAI tokens.
+            </p>
+          </div>
+          <button
+            onClick={handleRunAll}
+            disabled={anyRunning}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-periwinkle hover:bg-periwinkle-soft disabled:bg-neutral-100 disabled:text-neutral-400 text-white disabled:cursor-not-allowed transition-colors"
+          >
+            {runningAll ? "Running…" : "Run All Scenarios"}
+          </button>
         </div>
-        <button
-          onClick={handleRunAll}
-          disabled={anyRunning}
-          className="px-4 py-2 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-500 disabled:bg-neutral-800 disabled:text-neutral-600 text-neutral-950 disabled:cursor-not-allowed transition-colors"
-        >
-          {runningAll ? "Running…" : "Run All Scenarios"}
-        </button>
-      </div>
 
-      {error && (
-        <div className="text-sm text-red-400 bg-red-950/40 border border-red-900/60 rounded-lg px-4 py-3 mb-4">
-          {error}
-        </div>
-      )}
+        {error && (
+          <div className="text-sm text-fail-fg bg-fail-bg border border-red-200 rounded-lg px-4 py-3 mb-4">
+            {error}
+          </div>
+        )}
 
-      {scenarios.length === 0 && !error && (
-        <p className="text-xs text-neutral-600 text-center">Loading scenarios…</p>
-      )}
+        {scenarios.length === 0 && !error && (
+          <p className="text-xs text-neutral-500 text-center">Loading scenarios…</p>
+        )}
 
-      <ul className="space-y-2">
-        {scenarios.map((scenario) => {
-          const result = results[scenario.name];
-          const isExpanded = expanded === scenario.name;
-          const isRunningThis = runningOne === scenario.name;
+        <ul className="space-y-2">
+          {scenarios.map((scenario) => {
+            const result = results[scenario.name];
+            const isExpanded = expanded === scenario.name;
+            const isRunningThis = runningOne === scenario.name;
 
-          return (
-            <li key={scenario.name} className="border border-neutral-800 rounded-lg overflow-hidden">
-              <div className="w-full flex items-center justify-between px-4 py-3 gap-3">
-                <button
-                  onClick={() => setExpanded(isExpanded ? null : scenario.name)}
-                  className="flex-1 flex items-center justify-between text-left hover:text-neutral-200 transition-colors"
-                >
-                  <span className="text-sm text-neutral-200">{formatScenarioTitle(scenario.name)}</span>
-                  {result && (
-                    <span
-                      className={`text-xs font-medium px-2.5 py-1 rounded-full border ${
-                        result.passed
-                          ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
-                          : "bg-red-500/10 text-red-300 border-red-500/20"
-                      }`}
-                    >
-                      {result.passed ? "passed" : "failed"}
-                    </span>
-                  )}
-                </button>
-                <button
-                  onClick={() => handleRunOne(scenario.name)}
-                  disabled={anyRunning}
-                  className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium text-neutral-400 bg-neutral-800 border border-neutral-700 hover:bg-neutral-700 hover:text-neutral-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {isRunningThis ? "Running…" : "Run"}
-                </button>
-              </div>
-              {isExpanded && (
-                <div className="px-4 pb-4 space-y-3 text-xs">
-                  <div>
-                    <p className="text-neutral-600 uppercase tracking-wide text-[10px] mb-1">Expected outcome</p>
-                    <p className="text-neutral-500">{scenario.expected_outcome}</p>
-                  </div>
-                  {!result ? (
-                    <p className="text-neutral-600">Not run yet.</p>
-                  ) : (
-                    <>
-                      {result.hard_failures.length > 0 && (
-                        <ul className="text-red-400 list-disc list-inside">
-                          {result.hard_failures.map((f, i) => (
-                            <li key={i}>{f}</li>
-                          ))}
-                        </ul>
-                      )}
-                      <div className="bg-neutral-950/60 border border-neutral-800 rounded-lg p-3">
-                        <p className="text-neutral-600 uppercase tracking-wide text-[10px] mb-1">Result</p>
-                        <p className={result.passed ? "text-emerald-400" : "text-red-400"}>
-                          {result.passed ? "Met expected outcome" : "Did not meet expected outcome"}
-                        </p>
-                        <p className="text-neutral-500 mt-1">{result.reasoning}</p>
-                      </div>
-                    </>
-                  )}
+            return (
+              <li key={scenario.name} className="border border-neutral-200 rounded-lg overflow-hidden">
+                <div className="w-full flex items-center justify-between px-4 py-3 gap-3">
+                  <button
+                    onClick={() => setExpanded(isExpanded ? null : scenario.name)}
+                    className="flex-1 flex items-center justify-between text-left hover:text-periwinkle transition-colors"
+                  >
+                    <span className="text-sm text-black">{formatScenarioTitle(scenario.name)}</span>
+                    {result && (
+                      <span
+                        className={`text-xs font-medium px-2.5 py-1 rounded-full border ${
+                          result.passed
+                            ? "bg-pass-bg text-pass-fg border-emerald-200"
+                            : "bg-fail-bg text-fail-fg border-red-200"
+                        }`}
+                      >
+                        {result.passed ? "passed" : "failed"}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => handleRunOne(scenario.name)}
+                    disabled={anyRunning}
+                    className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium text-neutral-600 bg-neutral-100 border border-neutral-200 hover:bg-neutral-200 hover:text-black disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {isRunningThis ? "Running…" : "Run"}
+                  </button>
                 </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+                {isExpanded && (
+                  <div className="px-4 pb-4 space-y-3 text-xs">
+                    <div>
+                      <p className="text-neutral-500 uppercase tracking-wide text-[10px] mb-1">Expected outcome</p>
+                      <p className="text-neutral-600">{scenario.expected_outcome}</p>
+                    </div>
+                    {!result ? (
+                      <p className="text-neutral-500">Not run yet.</p>
+                    ) : (
+                      <>
+                        {result.hard_failures.length > 0 && (
+                          <ul className="text-fail-fg list-disc list-inside">
+                            {result.hard_failures.map((f, i) => (
+                              <li key={i}>{f}</li>
+                            ))}
+                          </ul>
+                        )}
+                        <div className="bg-neutral-50 border border-neutral-200 rounded-lg p-3">
+                          <p className="text-neutral-500 uppercase tracking-wide text-[10px] mb-1">Result</p>
+                          <p className={result.passed ? "text-pass-fg" : "text-fail-fg"}>
+                            {result.passed ? "Met expected outcome" : "Did not meet expected outcome"}
+                          </p>
+                          <p className="text-neutral-600 mt-1">{result.reasoning}</p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </div>
   );
 }

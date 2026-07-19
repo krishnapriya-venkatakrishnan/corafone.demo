@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Copied from ../frontend at build time (see package.json's "prebuild") --
+# not duplicated in git.
+public/call
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
