@@ -1,12 +1,11 @@
-# Deployment — backend on Render, frontend on Vercel
+# Deployment — backend on Render, frontend + dashboard on Vercel
 
-Two deployments, one path each:
+Two deployments:
 
 - **Backend** — FastAPI (WebSocket + REST) on **Render**, Starter tier (~$7/mo). Always-on, no spin-down between evaluator calls — no keep-alive ping needed. Cancel once evaluation is done.
-- **Frontend** — `frontend/` static files on **Vercel**.
-- **Dashboard** — **Vercel** too.
+- **Frontend + dashboard** — one **Vercel** project. `dashboard/`'s build copies `frontend/` into `dashboard/public/call` at build time, so the call UI is served at `/call` on the dashboard's own origin, not as a second deployment.
 
-**This is a two-pass deploy.** The frontend needs the backend's URL; the backend needs the frontend's origin for CORS. Order: backend → frontend → update backend CORS → redeploy backend.
+**This is a two-pass deploy.** The frontend needs the backend's URL; the backend needs the merged app's origin for CORS. Order: backend → frontend+dashboard → update backend CORS → redeploy backend.
 
 ---
 
@@ -85,7 +84,7 @@ If that import fails, the deploy will too.
 
 ## A2. CORS
 
-Already environment-driven: `app/config.py` reads `EXTRA_CORS_ORIGINS` (comma-separated) and appends it to the localhost list. Adding the deployed frontend's origin is an env-var edit, not a code change — filled in during Part C.
+Already environment-driven: `app/config.py` reads `EXTRA_CORS_ORIGINS` (comma-separated) and appends it to the localhost list. Adding the deployed app's origin is an env-var edit, not a code change — filled in during Part C.
 
 **Note:** CORS governs HTTP calls only. Starlette doesn't enforce `Origin` on WebSocket connections, so cross-origin `wss://` works regardless — don't go hunting CORS config if the socket misbehaves; the cause will be something else.
 
@@ -148,13 +147,22 @@ Confirm `.env` is gitignored — already is (checked).
 
 ---
 
-# Part B — Frontend (Vercel)
+# Part B — Frontend + dashboard (Vercel, one project)
 
-`frontend/` is plain static files with no build step; the backend URL is injected via a `window.CORAFONE_API_BASE` line in `index.html` (already wired — `app.js` reads it), not compiled in.
+`frontend/` and `dashboard/` deploy together. Vite copies `public/` verbatim into `dist/`, and `dashboard/package.json`'s `prebuild` script (`rm -rf public/call && cp -r ../frontend public/call`) puts a fresh copy of `frontend/` there before every build, landing at `/call` in the built output. `dashboard/public/call/` is gitignored — it's generated at build time, not duplicated in git.
 
-## B1. Backend URL
+## B1. Environment variables
 
-In `frontend/index.html`, before the `app.js` script tag, `window.CORAFONE_API_BASE` is set by hostname: `localhost`/`127.0.0.1` gets the local backend, anything else gets the deployed one. No edit needed before pushing — this is what lets `npm run dev`/`python3 -m http.server` iteration stay local instead of silently spending Deepgram/OpenAI credit and mutating the production demo account.
+`dashboard/src/api.ts` reads two, set in Vercel's dashboard:
+
+```
+VITE_API_BASE       = the Render backend URL (e.g. https://corafone-demo.onrender.com)
+VITE_FRONTEND_BASE  = /call
+```
+
+`VITE_FRONTEND_BASE` is a relative path now, not a second deployment's URL — `CallFrame`'s iframe (`${FRONTEND_BASE}/?phone_number=...`) resolves it against the dashboard's own origin, same-origin, no CORS involved.
+
+`frontend/index.html`'s own `window.CORAFONE_API_BASE` doesn't need touching for this. It already branches on hostname:
 
 ```html
 window.CORAFONE_API_BASE =
@@ -163,26 +171,29 @@ window.CORAFONE_API_BASE =
     : "https://corafone-demo.onrender.com";
 ```
 
-`app.js` derives `wss://` from it automatically. This matters more than it looks: browsers block microphone access on non-HTTPS origins, and refuse a `ws://` socket opened from an `https://` page — if the page loads but connecting does nothing, this is the first thing to check.
-
-Once deployed, load the Vercel URL directly and confirm it's driving the deployed agent (not `127.0.0.1`) before calling B2 done.
+`localhost`/`127.0.0.1` gets the local backend, anything else (including the deployed `/call`, once copied there unchanged) gets the deployed one. `app.js` derives `wss://` from it automatically — browsers block microphone access on non-HTTPS origins, and refuse a `ws://` socket opened from an `https://` page, so if the page loads but connecting does nothing, this is the first thing to check.
 
 ## B2. Deploy to Vercel
 
 1. [vercel.com](https://vercel.com) → New Project → import the repo.
-2. **Root Directory:** `frontend`
-3. **Framework Preset:** Other (no build step).
-4. **Build Command:** leave empty. **Output Directory:** leave empty/default too -- Output Directory resolves *relative to Root Directory*, so setting it to `frontend` again would make Vercel look for `frontend/frontend/index.html`, which doesn't exist.
+2. **Root Directory:** the repo root, **not** `dashboard` — the prebuild step reads `../frontend`, and a root of `dashboard` puts that outside the checked-out tree.
+3. **Framework Preset:** Other (custom build, not auto-detected Vite — the prebuild step needs to run first).
+4. **Build Command:** `cd dashboard && npm install && npm run build`
+5. **Output Directory:** `dashboard/dist`
 
-**Write down the frontend URL.**
+**Write down the deployed URL.** Part C needs it. `<url>/` is the dashboard; `<url>/call` is the standalone call UI `CallFrame` iframes.
 
 ## B3. Landing instruction
 
-Evaluators arrive cold. One line above the connect button:
+Evaluators arrive cold. If anyone links directly to `<url>/call` instead of going through the dashboard, one line above the connect button:
 
 > Allow microphone access, then click Connect. Cora will speak first.
 
-Without it, someone waits for a prompt that never comes and concludes the agent is broken.
+Without it, someone waits for a prompt that never comes and concludes the agent is broken. Through the dashboard's Voice Agent section, the "Start call" button's own framing text covers this instead.
+
+## B4. Retiring the old setup
+
+If a standalone `frontend/` Vercel project exists from before this merge, nothing points at it anymore — safe to stop using once the merged project is verified below, but that's your call to make, not something to delete automatically.
 
 ---
 
@@ -191,10 +202,10 @@ Without it, someone waits for a prompt that never comes and concludes the agent 
 Back in Render's environment settings:
 
 ```
-EXTRA_CORS_ORIGINS = https://your-frontend.vercel.app
+EXTRA_CORS_ORIGINS = https://your-merged-app.vercel.app
 ```
 
-No trailing slash — origins are scheme + host + port, and a trailing slash won't match.
+One origin now, not two — the frontend and dashboard share it. No trailing slash — origins are scheme + host + port, and a trailing slash won't match.
 
 Redeploy the backend. Until you do, the account lookup (`/api/dashboard/accounts`) will fail CORS and the page will look broken even though the backend is healthy.
 
@@ -204,9 +215,9 @@ Redeploy the backend. Until you do, the account lookup (`/api/dashboard/accounts
 
 In this order; each catches a different failure:
 
-1. Open the **frontend** URL. Page loads, no console errors.
+1. Open the deployed URL (the dashboard). Page loads, no console errors. Then open `<url>/call` directly too — it should show the standalone call UI (account picker, since there's no `?phone_number=` here).
 2. Devtools → Network: `/api/dashboard/accounts` returns 200, not a CORS error. (If it fails, Part C isn't done or the origin has a typo.)
-3. Click connect. Devtools → Network → WS: the socket shows `101 Switching Protocols`.
+3. Click connect (or, from the dashboard, "Start call"). Devtools → Network → WS: the socket shows `101 Switching Protocols`.
 4. **Call it from your phone, on cellular, not wifi.** Your laptop has cached mic permissions and localhost exemptions that hide real problems. This is the test that counts.
 5. **Multi-call sequence:** connect → settle in full → hang up → reconnect → confirm a clean $1,000 negotiation. The stateful test proves the SQL; this proves the wiring. Run it twice.
 6. Confirm a transcript landed in the Supabase `communications` bucket and a row in `voice_session_metrics`.
@@ -223,17 +234,4 @@ In this order; each catches a different failure:
 `gpt-4o` judges every call. Top up Deepgram and OpenAI.
 
 **Running dry mid-evaluation is the worst available failure** — the link works, the page loads, the agent silently doesn't respond, and it reads as a broken build rather than a billing problem.
-
----
-
-# Dashboard (Vercel)
-
-Already env-configurable (`dashboard/src/api.ts` reads `VITE_API_BASE` and `VITE_FRONTEND_BASE`).
-
-1. [vercel.com](https://vercel.com) → New Project → import the repo.
-2. **Root Directory:** `dashboard`
-3. **Framework Preset:** Vite (auto-detected). Build command and output directory default correctly (`npm run build`, `dist`).
-4. **Environment Variables:** `VITE_API_BASE` = backend URL, `VITE_FRONTEND_BASE` = frontend URL.
-
-Then add the dashboard's Vercel URL to `EXTRA_CORS_ORIGINS` too (comma-separated) and redeploy the backend.
 
