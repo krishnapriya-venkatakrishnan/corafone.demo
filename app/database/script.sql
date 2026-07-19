@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS voice_session_metrics (
     total_duration_seconds INT NOT NULL,
     avg_latency_ms INT NOT NULL,
     barge_in_count INT DEFAULT 0,
-    disposition_code VARCHAR(30) NOT NULL,
+    disposition_code VARCHAR(30) NOT NULL
+        CHECK (disposition_code IN (
+            'SETTLED', 'PAYMENT_PLAN_ACTIVE', 'NO_ACTION', 'ESCALATED_NO_AGREEMENT'
+        )),
     error_count INT NOT NULL DEFAULT 0,
     transcript_path TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -48,9 +51,14 @@ CREATE TABLE IF NOT EXISTS ai_evaluation_logs (
     evaluated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 5. Payment plans -- every multi-payment negotiated agreement lands here
--- (see app/tools.py's _persist_agreement); a single-payment agreement goes
--- through accounts.status = 'SETTLED' instead, no row here.
+-- 5. Payment plans -- every negotiated agreement lands here (see
+-- app/tools.py's _persist_agreement), single-payment settlements included,
+-- so a deferred lump sum still has its date recorded somewhere queryable;
+-- a single payment additionally sets accounts.status = 'SETTLED'.
+-- app/db.py's reset_demo_account marks a demo account's rows 'SUPERSEDED'
+-- (never deletes them) so agreement history survives across calls while
+-- get_active_payment_plans's status = 'ACTIVE' filter keeps a superseded
+-- row from reading as a live commitment.
 CREATE TABLE IF NOT EXISTS payment_plans (
     plan_id SERIAL PRIMARY KEY,
     account_id INT REFERENCES accounts(account_id) ON DELETE CASCADE,
@@ -58,8 +66,14 @@ CREATE TABLE IF NOT EXISTS payment_plans (
     amount_per_installment NUMERIC(10, 2) NOT NULL,
     total_amount NUMERIC(10, 2) NOT NULL,
     start_date DATE NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
+        CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
     payments_breakdown TEXT,
+    -- How many times each concession gate fired before this agreement was
+    -- reached -- distinguishes accepting the opening offer (0/0) from
+    -- holding out on a discount or a first-payment date.
+    discount_counters_issued INT NOT NULL DEFAULT 0,
+    date_counters_issued INT NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

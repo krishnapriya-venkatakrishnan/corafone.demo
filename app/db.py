@@ -36,6 +36,13 @@ async def reset_demo_account(account_id: int, phone_number: str) -> None:
     cooperative consumer, so a settlement or payment plan from call N must
     not carry into call N+1.
 
+    Account state resets; agreement history accumulates -- prior
+    payment_plans rows are marked SUPERSEDED, never deleted, so the
+    dashboard can still show what earlier calls agreed to. Only 'ACTIVE'
+    rows are ever superseded; a row already SUPERSEDED by an earlier reset
+    stays as it was. get_active_payment_plans filters to status = 'ACTIVE',
+    so a superseded row no longer reads as a live commitment.
+
     Hard-guarded to config.DEFAULT_CUSTOMER_PHONE_NUMBER inside this
     function, not left to caller discipline -- this must never be able to
     reset any other account, however it's called."""
@@ -49,7 +56,11 @@ async def reset_demo_account(account_id: int, phone_number: str) -> None:
                 config.DEMO_ACCOUNT_BALANCE,
                 account_id,
             )
-            await conn.execute("DELETE FROM payment_plans WHERE account_id = $1", account_id)
+            await conn.execute(
+                "UPDATE payment_plans SET status = 'SUPERSEDED' "
+                "WHERE account_id = $1 AND status = 'ACTIVE'",
+                account_id,
+            )
 
 
 async def apply_settlement(account_id: int) -> None:
@@ -67,20 +78,30 @@ async def create_payment_plan(
     total_amount: Decimal,
     start_date: date,
     payments_breakdown: str | None = None,
+    discount_counters_issued: int = 0,
+    date_counters_issued: int = 0,
 ) -> None:
     """`amount_per_installment` is the average (total_amount / num_installments)
     so the dashboard's "N x $X = total" display is always internally
     consistent, even for an uneven-split agreement. `payments_breakdown` is
     the exact per-payment amounts, comma-separated in order, for whenever
-    something needs the real numbers rather than the average."""
+    something needs the real numbers rather than the average.
+    discount/date_counters_issued record how many times each concession
+    gate fired before this agreement, so the dashboard can distinguish
+    accepting the opening offer from holding out on a discount or a date.
+    Written for every agreement, including single payments -- see
+    app/tools.py's _persist_agreement, which also closes the account via
+    apply_settlement for n=1, so this always sets 'PAYMENT_PLAN_ACTIVE'
+    here and lets that second call overwrite it to 'SETTLED' when
+    applicable, rather than branching on installment count itself."""
     async with _pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 """
                 INSERT INTO payment_plans
                     (account_id, num_installments, amount_per_installment, total_amount,
-                     start_date, payments_breakdown)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                     start_date, payments_breakdown, discount_counters_issued, date_counters_issued)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
                 account_id,
                 num_installments,
@@ -88,6 +109,8 @@ async def create_payment_plan(
                 total_amount,
                 start_date,
                 payments_breakdown,
+                discount_counters_issued,
+                date_counters_issued,
             )
             await conn.execute(
                 "UPDATE accounts SET status = 'PAYMENT_PLAN_ACTIVE' WHERE account_id = $1",

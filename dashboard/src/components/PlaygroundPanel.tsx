@@ -58,10 +58,16 @@ const VIOLATION_DESCRIPTIONS: Record<string, string> = {
   first_payment_too_late: "First payment is more than 14 days out",
   first_payment_in_past: "First payment date is in the past",
   discount_gate_locked: "First discount request -- countered once before any discount is accepted",
+  no_agreement_possible: "Every reachable arrangement has already been offered and refused",
 };
 
-function DecisionBadge({ decision }: { decision: "ACCEPT" | "COUNTER" }) {
-  const style = decision === "ACCEPT" ? "bg-pass-bg text-pass-fg border-emerald-200" : "bg-info-bg text-info-fg border-sky-200";
+function DecisionBadge({ decision }: { decision: "ACCEPT" | "COUNTER" | "NO_AGREEMENT" }) {
+  const style =
+    decision === "ACCEPT"
+      ? "bg-pass-bg text-pass-fg border-emerald-200"
+      : decision === "NO_AGREEMENT"
+        ? "bg-fail-bg text-fail-fg border-red-200"
+        : "bg-info-bg text-info-fg border-sky-200";
   return (
     <span className={`inline-flex items-center text-sm font-semibold px-3 py-1 rounded-full border ${style}`}>
       {decision}

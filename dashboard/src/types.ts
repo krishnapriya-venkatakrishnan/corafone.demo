@@ -119,7 +119,7 @@ export interface ValidateOffer {
 }
 
 export interface ValidateResponse {
-  decision: "ACCEPT" | "COUNTER";
+  decision: "ACCEPT" | "COUNTER" | "NO_AGREEMENT";
   reason: string;
   offer: ValidateOffer | null;
   violations: string[];

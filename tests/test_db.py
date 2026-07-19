@@ -9,16 +9,20 @@ from app import config, db
 
 
 async def test_reset_demo_account_resets_balance_status_and_review_flag(patched_db_pool, mock_db_conn):
+    """RE-BASELINED: reset_demo_account no longer deletes payment_plans rows
+    -- it marks them SUPERSEDED, so agreement history survives across a
+    reset (see reset_demo_account's docstring). Was a DELETE."""
     await db.reset_demo_account(42, config.DEFAULT_CUSTOMER_PHONE_NUMBER)
 
     assert mock_db_conn.execute.await_count == 2
-    update_call, delete_call = mock_db_conn.execute.call_args_list
+    update_call, supersede_call = mock_db_conn.execute.call_args_list
     assert "UPDATE accounts" in update_call.args[0]
     assert "ACTIVE" in update_call.args[0]
     assert update_call.args[1] == config.DEMO_ACCOUNT_BALANCE
     assert update_call.args[2] == 42
-    assert "DELETE FROM payment_plans" in delete_call.args[0]
-    assert delete_call.args[1] == 42
+    assert "UPDATE payment_plans" in supersede_call.args[0]
+    assert "SUPERSEDED" in supersede_call.args[0]
+    assert supersede_call.args[1] == 42
 
 
 async def test_reset_demo_account_refuses_any_other_phone_number(patched_db_pool, mock_db_conn):
@@ -53,13 +57,16 @@ async def test_create_payment_plan_writes_plan_and_updates_status(patched_db_poo
     class app/tools.py's type hints were fixed for."""
     breakdown = "100.00,100.00,100.00,100.00,100.00"
     await db.create_payment_plan(
-        42, 5, Decimal("100.00"), Decimal("500.00"), date(2026, 7, 10), breakdown
+        42, 5, Decimal("100.00"), Decimal("500.00"), date(2026, 7, 10), breakdown,
+        discount_counters_issued=1, date_counters_issued=0,
     )
 
     assert mock_db_conn.execute.await_count == 2
     plan_call, status_call = mock_db_conn.execute.call_args_list
     assert "INSERT INTO payment_plans" in plan_call.args[0]
-    assert plan_call.args[1:] == (42, 5, Decimal("100.00"), Decimal("500.00"), date(2026, 7, 10), breakdown)
+    assert plan_call.args[1:] == (
+        42, 5, Decimal("100.00"), Decimal("500.00"), date(2026, 7, 10), breakdown, 1, 0,
+    )
     assert "PAYMENT_PLAN_ACTIVE" in status_call.args[0]
     assert status_call.args[1] == 42
 

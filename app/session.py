@@ -57,7 +57,11 @@ class CallSession:
     # Agreement idempotency guard (record at most once per call).
     agreement_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     agreement_recorded: bool = False
-    agreement_disposition: str | None = None  # "SETTLED" or "PAYMENT_PLAN_ACTIVE", set on success
+    # "SETTLED"/"PAYMENT_PLAN_ACTIVE" on a successful record_agreement, or
+    # "ESCALATED_NO_AGREEMENT" set by app/tools.py when validate_consumer_proposal
+    # returns a NO_AGREEMENT verdict (see app/negotiation.py's candidate
+    # exhaustion). None means neither has happened yet this call.
+    agreement_disposition: str | None = None
 
     # Deepgram Voice Agent connection, opened on connect.
     agent_context: Any = None

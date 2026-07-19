@@ -180,6 +180,18 @@ async def teardown_session(session: CallSession) -> None:
     if session.account_id is not None:
         disposition_code = session.agreement_disposition or "NO_ACTION"
 
+        if disposition_code == "ESCALATED_NO_AGREEMENT":
+            # Deterministic flag, set here rather than left to the LLM judge
+            # to infer -- see app/negotiation.py's candidate exhaustion
+            # (selection returning None, no legal arrangement reachable).
+            try:
+                await db.set_requires_manual_review(session.account_id)
+            except Exception:
+                logger.exception(
+                    "Failed to flag account %s for manual review (session %s).",
+                    session.account_id, session.session_id,
+                )
+
         total_duration_seconds = int((datetime.now() - session.call_started_at).total_seconds())
         avg_latency_ms = (
             int(sum(session.latency_samples_ms) / len(session.latency_samples_ms))

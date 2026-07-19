@@ -71,13 +71,19 @@ def _offer_to_dict(offer: negotiation.Offer) -> dict:
 
 def _verdict_to_tool_result(verdict: negotiation.Verdict) -> dict:
     """Never includes `violations` -- those are log-only, see
-    negotiation.Verdict's docstring; the model must never see or speak them."""
+    negotiation.Verdict's docstring; the model must never see or speak them.
+    `minimum_payment` is included only when set (payment_below_floor fired
+    on this verdict) -- see Verdict's docstring for why it isn't always
+    present."""
     offer = verdict.accepted_offer or verdict.counter_offer
-    return {
+    result = {
         "decision": verdict.decision,
         "reason": verdict.reason,
         "offer": _offer_to_dict(offer) if offer else None,
     }
+    if verdict.minimum_payment is not None:
+        result["minimum_payment"] = str(verdict.minimum_payment)
+    return result
 
 
 def _proposal_from_args(args: dict) -> negotiation.Proposal:
@@ -116,6 +122,13 @@ async def _execute_validate_proposal_tool_call(args: dict, session: CallSession)
             session.gate_spent_turn = session.turn_id
             session.gate_verdict_this_turn = verdict
 
+    if verdict.decision == "NO_AGREEMENT":
+        # No DB write here (this tool stays read-only) -- just a session
+        # flag so teardown_session can derive the disposition and flag the
+        # account for manual review. See app/negotiation.py's candidate
+        # exhaustion (selection returning None).
+        session.agreement_disposition = "ESCALATED_NO_AGREEMENT"
+
     session.cached_validation_turn = session.turn_id
     session.cached_validation_key = key
     session.cached_validation_verdict = verdict
@@ -123,21 +136,26 @@ async def _execute_validate_proposal_tool_call(args: dict, session: CallSession)
 
 
 # --- record_agreement: the single write, re-validated server-side ---
-async def _persist_agreement(account_id: int, offer: negotiation.Offer) -> None:
-    """A single payment closes the account now (mirrors the mock ledger's
-    old settlement behavior); more than one is a schedule of future
-    payments (mirrors the old payment-plan behavior). `amount_per_installment`
-    is the average, not the first payment, so "N x $X" always equals the
-    total even for an uneven split; `payments_breakdown` keeps the exact
-    amounts alongside it."""
+async def _persist_agreement(
+    account_id: int, offer: negotiation.Offer, discount_counters_issued: int, date_counters_issued: int
+) -> None:
+    """One write path for every agreement, single payment included: a
+    payment_plans row always carries the schedule (so a deferred lump sum
+    records a date somewhere queryable, not just accounts.status), plus a
+    settlement close for a single payment. `amount_per_installment` is the
+    average, not the first payment, so "N x $X" always equals the total
+    even for an uneven split; `payments_breakdown` keeps the exact amounts
+    alongside it. discount/date_counters_issued are stored at record time
+    so the dashboard can distinguish accepting the opening offer from
+    holding out on a discount or a date."""
+    average = (offer.total / len(offer.payments)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    breakdown = ",".join(str(p) for p in offer.payments)
+    await db.create_payment_plan(
+        account_id, len(offer.payments), average, offer.total, offer.dates[0], breakdown,
+        discount_counters_issued, date_counters_issued,
+    )
     if len(offer.payments) == 1:
         await db.apply_settlement(account_id)
-    else:
-        average = (offer.total / len(offer.payments)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        breakdown = ",".join(str(p) for p in offer.payments)
-        await db.create_payment_plan(
-            account_id, len(offer.payments), average, offer.total, offer.dates[0], breakdown
-        )
     await db.log_communication(
         account_id,
         f"Agreement recorded ({offer.tier.value}): ${offer.total} total across "
@@ -159,7 +177,14 @@ async def _execute_record_agreement_tool_call(args: dict, session: CallSession) 
         # write must not spend the concession gate. If it mutated the live
         # state, a hallucinated or malformed record_agreement call would
         # silently unlock the next real discount request for free.
-        state_for_check = dataclasses.replace(session.negotiation_state)
+        # `offered` is explicitly re-copied -- dataclasses.replace() only
+        # shallow-copies fields, so without this the copy and the live
+        # state would share the same set object, and validate_proposal
+        # mutating it in place (.add()) would leak into live state exactly
+        # like the gate gap this comment warns about.
+        state_for_check = dataclasses.replace(
+            session.negotiation_state, offered=set(session.negotiation_state.offered)
+        )
         verdict = negotiation.validate_proposal(balance, proposal, call_date, state_for_check)
 
         if verdict.decision != "ACCEPT":
@@ -171,7 +196,11 @@ async def _execute_record_agreement_tool_call(args: dict, session: CallSession) 
             }
 
         offer = verdict.accepted_offer
-        await _persist_agreement(session.account_id, offer)
+        await _persist_agreement(
+            session.account_id, offer,
+            session.negotiation_state.discount_counters_issued,
+            session.negotiation_state.date_counters_issued,
+        )
 
         session.agreement_recorded = True
         session.agreement_disposition = "SETTLED" if len(offer.payments) == 1 else "PAYMENT_PLAN_ACTIVE"

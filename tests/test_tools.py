@@ -69,9 +69,18 @@ async def test_validate_proposal_never_exposes_violations(session):
 async def test_validate_proposal_caches_within_same_turn(session):
     """A duplicate tool call inside one reasoning turn must not re-spend the
     concession gate. Two identical calls, no turn boundary between them,
-    must increment the gate counter exactly once."""
+    must increment the gate counter exactly once.
+
+    RE-BASELINED: $400 (was used here) no longer spends the gate on a $500
+    balance -- capacity $400 still reaches the down-payment-plus-one tier
+    ($375 leading payment), which beats settlement in tier order regardless
+    of whether settlement is excluded, so excluding it changes nothing (see
+    negotiation.py's capacity-scored gate fix). $300 genuinely can't reach
+    that tier ($375 > $300), so excluding settlement does change the
+    outcome there, and the gate is spent -- this test's actual subject
+    (turn-scoped caching) is unaffected by which amount is used."""
     discount_proposal = {
-        "total_amount": 400.0,  # a discount request (20% off a $500 balance)
+        "total_amount": 300.0,  # a discount request that genuinely spends the gate on a $500 balance
         "number_of_payments": 1,
         "cadence": "once",
         "first_payment_date": _iso(TODAY),
@@ -93,18 +102,20 @@ async def test_validate_proposal_caches_within_same_turn(session):
 
 async def test_validate_proposal_caches_across_int_float_representations(session):
     """The cache key is built from the converted values (Decimal/int), not
-    the raw JSON -- 400 and 400.0 must be treated as the same proposal."""
+    the raw JSON -- 300 and 300.0 must be treated as the same proposal.
+    RE-BASELINED to $300 -- see test_validate_proposal_caches_within_same_turn
+    for why $400 no longer spends the gate on this $500-balance session."""
     await tools.handle_function_call_request(
         make_function_call(
             "validate_consumer_proposal",
-            {"total_amount": 400, "number_of_payments": 1, "cadence": "once", "first_payment_date": _iso(TODAY)},
+            {"total_amount": 300, "number_of_payments": 1, "cadence": "once", "first_payment_date": _iso(TODAY)},
         ),
         session,
     )
     await tools.handle_function_call_request(
         make_function_call(
             "validate_consumer_proposal",
-            {"total_amount": 400.0, "number_of_payments": 1.0, "cadence": "once", "first_payment_date": _iso(TODAY)},
+            {"total_amount": 300.0, "number_of_payments": 1.0, "cadence": "once", "first_payment_date": _iso(TODAY)},
             "call_2",
         ),
         session,
@@ -116,11 +127,24 @@ async def test_validate_proposal_caches_across_int_float_representations(session
 async def test_validate_proposal_revalidates_on_new_turn(session):
     """A genuinely new turn re-runs validation -- if the consumer holds
     their position after the gate has already been spent, the second,
-    later call accepts."""
+    later call accepts.
+
+    RE-BASELINED to $400 over 2 monthly payments (was $400 as a single
+    payment). A single $400 payment no longer spends the gate at all on
+    this $500 balance (see test_validate_proposal_caches_within_same_turn),
+    and a total low enough to genuinely spend the gate as a single payment
+    (e.g. $300) is below the $400 settlement ceiling, so it can never
+    legally ACCEPT even once unlocked -- it only ever repairs up to $400.
+    Splitting the same $400 across 2 payments decouples the two
+    requirements: capacity is $400/2 = $200 (low enough that excluding
+    settlement genuinely changes the outcome, so the gate is spent), while
+    the total itself sits exactly at the settlement ceiling, which is
+    legal and must ACCEPT once the gate is unlocked and the consumer holds
+    their position."""
     discount_proposal = {
         "total_amount": 400.0,
-        "number_of_payments": 1,
-        "cadence": "once",
+        "number_of_payments": 2,
+        "cadence": "monthly",
         "first_payment_date": _iso(TODAY),
     }
 
@@ -143,18 +167,22 @@ async def test_gate_cannot_be_shopped_within_one_turn(session):
     """The model tries two *different* discount amounts in the same turn
     (no new customer input between them). The first spends the gate; the
     second must not benefit from negotiation_state now reading "unlocked"
-    -- the consumer never repeated themselves."""
+    -- the consumer never repeated themselves. RE-BASELINED to $300/$350 --
+    see test_validate_proposal_caches_within_same_turn for why $400 no
+    longer spends the gate on this $500-balance session; $300 and $350
+    both still do (each is below the $375 down-payment-plus-one leading
+    payment that would otherwise make excluding settlement moot)."""
     await tools.handle_function_call_request(
         make_function_call(
             "validate_consumer_proposal",
-            {"total_amount": 400.0, "number_of_payments": 1, "cadence": "once", "first_payment_date": _iso(TODAY)},
+            {"total_amount": 300.0, "number_of_payments": 1, "cadence": "once", "first_payment_date": _iso(TODAY)},
         ),
         session,
     )
     await tools.handle_function_call_request(
         make_function_call(
             "validate_consumer_proposal",
-            {"total_amount": 450.0, "number_of_payments": 1, "cadence": "once", "first_payment_date": _iso(TODAY)},
+            {"total_amount": 350.0, "number_of_payments": 1, "cadence": "once", "first_payment_date": _iso(TODAY)},
             "call_2",
         ),
         session,
@@ -169,7 +197,12 @@ async def test_gate_cannot_be_shopped_within_one_turn(session):
 
 
 async def test_record_agreement_settles_single_payment(session):
+    """RE-BASELINED: a single payment now also writes a payment_plans row
+    (section 9 -- one write path for every agreement, so a deferred lump
+    sum still has its date recorded somewhere queryable), in addition to
+    the settlement close. create_payment_plan must now be patched too."""
     with patch("app.db.apply_settlement", new=AsyncMock()) as apply_settlement, \
+         patch("app.db.create_payment_plan", new=AsyncMock()) as create_plan, \
          patch("app.db.log_communication", new=AsyncMock()):
         await tools.handle_function_call_request(
             make_function_call(
@@ -185,6 +218,8 @@ async def test_record_agreement_settles_single_payment(session):
             session,
         )
 
+    create_plan.assert_awaited_once()
+    assert create_plan.call_args.args[1] == 1  # num_installments
     apply_settlement.assert_awaited_once_with(session.account_id)
     response = json.loads(session.agent_connection.sent_function_call_responses[0].content)
     assert response["status"] == "success"
@@ -281,6 +316,7 @@ async def test_record_agreement_rejection_does_not_spend_the_gate(session):
 
 async def test_record_agreement_only_once_per_call(session):
     with patch("app.db.apply_settlement", new=AsyncMock()) as apply_settlement, \
+         patch("app.db.create_payment_plan", new=AsyncMock()), \
          patch("app.db.log_communication", new=AsyncMock()):
         agreement_args = {
             "tier": "full_payment",

@@ -40,6 +40,7 @@ const DISPOSITION_LABELS: Record<string, string> = {
   PAYMENT_PLAN_ACTIVE: "Payment plan",
   CALLBACK_SCHEDULED: "Callback scheduled",
   NO_ACTION: "No action",
+  ESCALATED_NO_AGREEMENT: "Escalated (no agreement)",
 };
 
 export default function EvaluationPanel() {
