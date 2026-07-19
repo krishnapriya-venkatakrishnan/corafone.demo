@@ -2,7 +2,7 @@
 
 Two deployments, one path each:
 
-- **Backend** — FastAPI (WebSocket + REST) on **Render**, free tier. No card required to sign up, and it's the only one of the usual free options that doesn't need a payment method on file just to use the free allowance (Fly.io now does; Railway's free tier is a one-time trial credit, not a standing free plan). The tradeoff — sleep after 15 minutes idle — is mitigated in A4 with a free keep-alive ping, not paid around.
+- **Backend** — FastAPI (WebSocket + REST) on **Render**, Starter tier (~$7/mo). Always-on, no spin-down between evaluator calls — no keep-alive ping needed. Cancel once evaluation is done.
 - **Frontend** — `frontend/` static files on **Vercel**.
 - **Dashboard** — **Vercel** too.
 
@@ -108,7 +108,7 @@ SELECT customer_name, current_balance, status FROM accounts;
 ## A4. Deploy to Render
 
 1. [render.com](https://render.com) → New → Web Service → connect the repo.
-2. Runtime: Python 3. Instance type: **Free**.
+2. Runtime: Python 3. Instance type: **Starter** (~$7/mo).
 3. Build command: `pip install -r requirements.txt`
 4. Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 5. **Health Check Path: `/health`.** Required — with no static mount, `/` has no route and 404s. Render health-checking `/` by default would mark a working service unhealthy and restart it in a loop.
@@ -117,7 +117,7 @@ SELECT customer_name, current_balance, status FROM accounts;
 
 **Pin the Python version** with a `runtime.txt` at repo root (`python-3.12.7`), or Render picks a default that can change under you between deploys.
 
-**Free-tier sleep, mitigated:** Render's free web services sleep after ~15 minutes idle and take 30–60s to wake — an evaluator opening your link on day four would see a slow first load. Use a free uptime monitor (UptimeRobot or cron-job.org, both free) to hit `/health` every 10 minutes for the evaluation week. Keeps the service warm at $0. Turn the monitor off once evaluation is done.
+Starter is always-on, no spin-down between evaluator calls — no keep-alive ping needed. Cancel the service once evaluation is done.
 
 ## A5. Environment variables
 
@@ -141,7 +141,7 @@ Confirm `.env` is gitignored — already is (checked).
 
 ## A6. Verify before moving on
 
-- `https://your-backend.onrender.com/health` → `{"status":"healthy"}`
+- `https://corafone-demo.onrender.com/health` → `{"status":"healthy"}`
 - Deploy log contains "Supabase connection pool initialized." If not, `DATABASE_URL` is wrong (almost always direct-vs-pooler).
 
 **Write down the backend URL.** Part B needs it.
@@ -157,7 +157,7 @@ Confirm `.env` is gitignored — already is (checked).
 In `frontend/index.html`, before the `app.js` script tag, `window.CORAFONE_API_BASE` currently points at `http://127.0.0.1:8000` for local dev. Change it to the deployed backend origin before pushing:
 
 ```html
-window.CORAFONE_API_BASE = "https://your-backend.onrender.com";
+window.CORAFONE_API_BASE = "https://corafone-demo.onrender.com";
 ```
 
 `app.js` derives `wss://` from it automatically. This matters more than it looks: browsers block microphone access on non-HTTPS origins, and refuse a `ws://` socket opened from an `https://` page — if the page loads but connecting does nothing, this is the first thing to check.
@@ -211,7 +211,7 @@ In this order; each catches a different failure:
 
 **Watch the WebSocket idle timeout.** Some proxies drop connections idle for ~60–100 seconds. Test it: connect, say nothing for two minutes, then speak — if the socket died, you'll need a keepalive ping.
 
-**Supabase free projects pause after ~7 days of inactivity** — right at the edge of your reachability window. The keep-alive ping in A4 only hits the backend, not Supabase, so a quiet evaluation stretch could still hit a paused database. Check the project after a few days.
+**Supabase free projects pause after ~7 days of inactivity** — right at the edge of your reachability window, and independent of the Render tier (that only keeps the backend itself awake, not Supabase). Check the project after a few quiet days.
 
 ---
 
