@@ -169,7 +169,7 @@ Test locally first with this value pointed at the deployed backend — the local
 1. [vercel.com](https://vercel.com) → New Project → import the repo.
 2. **Root Directory:** `frontend`
 3. **Framework Preset:** Other (no build step).
-4. **Build Command:** leave empty. **Output Directory:** leave as `frontend` (the default, since there's no build step).
+4. **Build Command:** leave empty. **Output Directory:** leave empty/default too -- Output Directory resolves *relative to Root Directory*, so setting it to `frontend` again would make Vercel look for `frontend/frontend/index.html`, which doesn't exist.
 
 **Write down the frontend URL.**
 
