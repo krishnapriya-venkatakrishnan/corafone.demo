@@ -38,10 +38,12 @@ APP_TITLE = "Corafone Voice Gateway"
 WS_ROUTE_PATH = "/ws/stream"
 
 # --- Dashboard (app/dashboard_api.py) ---
+# Deployed origins go in EXTRA_CORS_ORIGINS (comma-separated), not here.
+_extra_cors_origins = os.getenv("EXTRA_CORS_ORIGINS", "")
 DASHBOARD_ORIGINS = [
     "http://localhost:5173", "http://127.0.0.1:5173",  # Vite dev server (dashboard/)
     "http://localhost:8080", "http://127.0.0.1:8080",  # frontend/'s python -m http.server
-]
+] + [origin.strip() for origin in _extra_cors_origins.split(",") if origin.strip()]
 
 # --- Models ---
 OPENAI_MODEL = "gpt-4o-mini"  # LLM used for reasoning (via Deepgram's think.provider)

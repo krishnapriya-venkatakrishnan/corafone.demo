@@ -1,11 +1,23 @@
-"""Shared mock-Postgres construction, usable both as pytest fixtures
-(tests/conftest.py) and as a plain context manager outside pytest --
-app/dashboard_api.py's scenario-runner endpoint uses this directly so
-clicking "Run Scenarios" in the dashboard never touches the real Supabase
-account, exactly like the pytest suite doesn't."""
+"""Shared fakes/mocks: usable as pytest fixtures (tests/conftest.py) and as
+plain imports outside pytest. Nothing here imports pytest -- app/dashboard_api.py
+imports from this module at runtime, in production, where pytest isn't installed."""
 
+import json
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock
+
+
+class FakeWebSocket:
+    """Records every JSON/text frame sent, instead of hitting a real socket."""
+
+    def __init__(self):
+        self.sent_text: list[str] = []
+
+    async def send_text(self, data: str) -> None:
+        self.sent_text.append(data)
+
+    def sent_packets(self) -> list[dict]:
+        return [json.loads(t) for t in self.sent_text]
 
 
 def build_mock_db_conn() -> MagicMock:

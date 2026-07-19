@@ -6,8 +6,10 @@
  */
 
 // --- Config ---
-const API_BASE = "http://127.0.0.1:8000";        // FastAPI backend
-const WS_BASE = "ws://127.0.0.1:8000/ws/stream"; // same backend's /ws/stream
+// Backend origin, set in index.html; falls back to same-origin only if
+// that script tag is missing.
+const API_BASE = window.CORAFONE_API_BASE || window.location.origin;
+const WS_BASE = API_BASE.replace(/^http/, "ws") + "/ws/stream";
 const TARGET_SAMPLE_RATE = 24000;      // Voice Agent session rate, in and out
 const UPLOAD_INTERVAL_MS = 100;        // how often we flush mic audio upstream
 const PLAYBACK_SAMPLE_RATE = 24000;    // backend sends PCM16 @ 24kHz mono

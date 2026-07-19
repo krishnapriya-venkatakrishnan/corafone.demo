@@ -166,7 +166,7 @@ async def _run_one_scenario(scenario) -> dict:
     stream and the single-scenario endpoint below."""
     # Imported here, not at module load, to keep the tests/ dependency
     # visibly scoped to the one feature that needs it.
-    from tests.conftest import FakeWebSocket
+    from tests.mock_db import FakeWebSocket
     from tests.scenarios import structural_checks
     from tests.scenarios.harness import run_conversation
     from tests.scenarios.judge import judge_scenario

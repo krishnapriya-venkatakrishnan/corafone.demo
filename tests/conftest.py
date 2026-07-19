@@ -7,20 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.session import CallSession
-from tests.mock_db import build_mock_db_conn, build_mock_pool
-
-
-class FakeWebSocket:
-    """Records every JSON/text frame sent, instead of hitting a real socket."""
-
-    def __init__(self):
-        self.sent_text: list[str] = []
-
-    async def send_text(self, data: str) -> None:
-        self.sent_text.append(data)
-
-    def sent_packets(self) -> list[dict]:
-        return [json.loads(t) for t in self.sent_text]
+from tests.mock_db import FakeWebSocket, build_mock_db_conn, build_mock_pool
 
 
 class FakeAgentConnection:
