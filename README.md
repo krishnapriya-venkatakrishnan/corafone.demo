@@ -1,5 +1,7 @@
 # Corafone Voice Gateway
 
+**Live demo:** [corafone-demo.vercel.app](https://corafone-demo.vercel.app/)
+
 An AI voice agent that makes outbound debt-collection calls — holds a real spoken conversation, offers a settlement or a payment plan, and grades its own compliance after every call. Built on FastAPI, Deepgram's Voice Agent API, and OpenAI, with a Supabase backend and a TypeScript dashboard for oversight.
 
 ## Features
@@ -13,8 +15,22 @@ An AI voice agent that makes outbound debt-collection calls — holds a real spo
 
 ## Architecture
 
-<!-- Export the diagram from Excalidraw/Eraser and save it as docs/diagrams/architecture.png (or .svg) -- this embed will pick it up automatically. -->
-![Architecture diagram](docs/diagrams/system_architecture.svg)
+```mermaid
+flowchart LR
+    Browser -- "mic audio (WS)" --> Gateway["FastAPI Gateway<br/>/ws/stream"]
+    Gateway --> Relay["Voice Session Relay"]
+    Relay <--> Deepgram["Deepgram Voice Agent<br/>STT + OpenAI think + TTS"]
+    Deepgram -- "speech audio" --> Browser
+    Relay -- "on hangup" --> Storage[("Supabase Storage<br/>transcript")]
+    Storage --> CJudge["Compliance Judge<br/>gpt-4o"]
+    Relay -.shares.-> Core
+
+    Persona["Consumer Persona<br/>gpt-4o-mini (test-only)"] <--> Core
+    Core -- "mocked DB" --> SJudge["Scenario Judge<br/>gpt-4o"]
+
+    Core["Cora Core<br/>config.py + app/tools.py"] --> DB[("Supabase Postgres")]
+    CJudge --> DB
+```
 
 **Four separate AI decision-makers**, each with a different job and a different amount of autonomy:
 

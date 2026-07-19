@@ -152,17 +152,20 @@ Confirm `.env` is gitignored — already is (checked).
 
 `frontend/` is plain static files with no build step; the backend URL is injected via a `window.CORAFONE_API_BASE` line in `index.html` (already wired — `app.js` reads it), not compiled in.
 
-## B1. Set the backend URL
+## B1. Backend URL
 
-In `frontend/index.html`, before the `app.js` script tag, `window.CORAFONE_API_BASE` currently points at `http://127.0.0.1:8000` for local dev. Change it to the deployed backend origin before pushing:
+In `frontend/index.html`, before the `app.js` script tag, `window.CORAFONE_API_BASE` is set by hostname: `localhost`/`127.0.0.1` gets the local backend, anything else gets the deployed one. No edit needed before pushing — this is what lets `npm run dev`/`python3 -m http.server` iteration stay local instead of silently spending Deepgram/OpenAI credit and mutating the production demo account.
 
 ```html
-window.CORAFONE_API_BASE = "https://corafone-demo.onrender.com";
+window.CORAFONE_API_BASE =
+  (location.hostname === "localhost" || location.hostname === "127.0.0.1")
+    ? "http://127.0.0.1:8000"
+    : "https://corafone-demo.onrender.com";
 ```
 
 `app.js` derives `wss://` from it automatically. This matters more than it looks: browsers block microphone access on non-HTTPS origins, and refuse a `ws://` socket opened from an `https://` page — if the page loads but connecting does nothing, this is the first thing to check.
 
-Test locally first with this value pointed at the deployed backend — the local page should drive the deployed agent. If that works, the deploy will.
+Once deployed, load the Vercel URL directly and confirm it's driving the deployed agent (not `127.0.0.1`) before calling B2 done.
 
 ## B2. Deploy to Vercel
 
