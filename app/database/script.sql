@@ -39,10 +39,15 @@ CREATE TABLE IF NOT EXISTS voice_session_metrics (
 CREATE TABLE IF NOT EXISTS ai_evaluation_logs (
     eval_id SERIAL PRIMARY KEY,
     session_id VARCHAR(50) REFERENCES voice_session_metrics(session_id) ON DELETE CASCADE,
-    mini_miranda_passed BOOLEAN NOT NULL,
+    -- Nullable (F1/F3): null means "not applicable" -- identity was never
+    -- confirmed (a wrong-person/third-party call, where disclosing either
+    -- of these would itself be a violation) or the call ended before
+    -- disclosure was ever due. NOT NULL would force a false positive/
+    -- negative in exactly the calls where withholding was correct.
+    mini_miranda_passed BOOLEAN,
     pii_redacted_correctly BOOLEAN NOT NULL,
     hallucination_detected BOOLEAN NOT NULL,
-    identity_verified_before_disclosure BOOLEAN NOT NULL,
+    identity_verified_before_disclosure BOOLEAN,
     prohibited_conduct_detected BOOLEAN NOT NULL,
     right_to_cease_honored BOOLEAN,
     tone_score INT CHECK (tone_score BETWEEN 1 AND 5),
@@ -69,11 +74,28 @@ CREATE TABLE IF NOT EXISTS payment_plans (
     status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
         CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
     payments_breakdown TEXT,
+    -- Per-payment dates, comma-separated ISO dates, parallel to
+    -- payments_breakdown -- the dashboard's Call Report (app/dashboard_api
+    -- .py's get_calls) renders the two together as the agreed schedule.
+    payment_dates TEXT,
+    -- The tier name from the accepted Offer (e.g. 'settlement',
+    -- 'payment_plan') -- was never persisted before; the Call Report
+    -- needs it to show what kind of agreement this was, not just the
+    -- numbers.
+    tier VARCHAR(30),
     -- How many times each concession gate fired before this agreement was
     -- reached -- distinguishes accepting the opening offer (0/0) from
     -- holding out on a discount or a first-payment date.
     discount_counters_issued INT NOT NULL DEFAULT 0,
     date_counters_issued INT NOT NULL DEFAULT 0,
+    -- Ties this agreement to the call that produced it (voice_session_metrics
+    -- .session_id) -- without it, a plan can only be correlated to a call by
+    -- timestamp, which breaks under concurrent callers and the
+    -- reset-and-supersede history (see app/db.py's reset_demo_account). No
+    -- FK -- voice_session_metrics is written by a separate call in
+    -- app/voice_agent.py's teardown_session, after the agreement, so the
+    -- referenced row may not exist yet at insert time.
+    session_id VARCHAR(50),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

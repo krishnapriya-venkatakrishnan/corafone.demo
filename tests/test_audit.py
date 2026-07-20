@@ -42,6 +42,107 @@ async def test_run_compliance_audit_computes_cost_and_writes_all_fields(session)
     assert abs(args[9] - expected_cost) < 1e-9
 
 
+# --- mini_miranda_interrupted override: a barge-in during the disclosure
+# (app/voice_agent.py) must force mini_miranda_passed to False
+# deterministically, regardless of what the LLM judge concludes from the
+# transcript text alone -- a truncated disclosure was not made. ---
+async def test_mini_miranda_interrupted_overrides_a_true_judge_verdict(session):
+    session.log_lines = ["2026-01-01 00:00:00 [assistant] hi"]
+    session.mini_miranda_interrupted = True
+    report = audit.EvaluationReport(
+        mini_miranda_passed=True,  # the judge read the transcript as fine
+        pii_redacted_correctly=True,
+        hallucination_detected=False,
+        identity_verified_before_disclosure=True,
+        prohibited_conduct_detected=False,
+        right_to_cease_honored=None,
+        tone_score=5,
+        judge_reasoning="Disclosure present in transcript.",
+    )
+    response = _fake_response(report, prompt_tokens=100, completion_tokens=50)
+
+    with patch("app.audit.openai_client.beta.chat.completions.parse", new=AsyncMock(return_value=response)), \
+         patch("app.audit.db.create_ai_evaluation_log", new=AsyncMock()) as create_log:
+        await audit.run_compliance_audit(session)
+
+    args = create_log.call_args.args
+    assert args[1] is False  # mini_miranda_passed, overridden
+    assert "interrupted" in args[8].lower()  # judge_reasoning notes the override
+
+
+async def test_mini_miranda_interrupted_overrides_a_null_judge_verdict(session):
+    """None (not applicable) is also wrong once we know the disclosure was
+    genuinely attempted and cut off -- only a judge answer already False
+    is left untouched (see the next test)."""
+    session.log_lines = ["2026-01-01 00:00:00 [assistant] hi"]
+    session.mini_miranda_interrupted = True
+    report = audit.EvaluationReport(
+        mini_miranda_passed=None,
+        pii_redacted_correctly=True,
+        hallucination_detected=False,
+        identity_verified_before_disclosure=None,
+        prohibited_conduct_detected=False,
+        right_to_cease_honored=None,
+        tone_score=3,
+        judge_reasoning="Unclear from transcript.",
+    )
+    response = _fake_response(report, prompt_tokens=100, completion_tokens=50)
+
+    with patch("app.audit.openai_client.beta.chat.completions.parse", new=AsyncMock(return_value=response)), \
+         patch("app.audit.db.create_ai_evaluation_log", new=AsyncMock()) as create_log:
+        await audit.run_compliance_audit(session)
+
+    assert create_log.call_args.args[1] is False
+
+
+async def test_mini_miranda_interrupted_false_leaves_judge_verdict_alone(session):
+    session.log_lines = ["2026-01-01 00:00:00 [assistant] hi"]
+    session.mini_miranda_interrupted = False
+    report = audit.EvaluationReport(
+        mini_miranda_passed=True,
+        pii_redacted_correctly=True,
+        hallucination_detected=False,
+        identity_verified_before_disclosure=True,
+        prohibited_conduct_detected=False,
+        right_to_cease_honored=None,
+        tone_score=5,
+        judge_reasoning="Solid call.",
+    )
+    response = _fake_response(report, prompt_tokens=100, completion_tokens=50)
+
+    with patch("app.audit.openai_client.beta.chat.completions.parse", new=AsyncMock(return_value=response)), \
+         patch("app.audit.db.create_ai_evaluation_log", new=AsyncMock()) as create_log:
+        await audit.run_compliance_audit(session)
+
+    args = create_log.call_args.args
+    assert args[1] is True
+    assert args[8] == "Solid call."  # untouched, no override note appended
+
+
+async def test_mini_miranda_interrupted_true_already_false_verdict_not_double_annotated(session):
+    session.log_lines = ["2026-01-01 00:00:00 [assistant] hi"]
+    session.mini_miranda_interrupted = True
+    report = audit.EvaluationReport(
+        mini_miranda_passed=False,  # the judge already got it right
+        pii_redacted_correctly=True,
+        hallucination_detected=False,
+        identity_verified_before_disclosure=True,
+        prohibited_conduct_detected=False,
+        right_to_cease_honored=None,
+        tone_score=3,
+        judge_reasoning="Disclosure was cut off.",
+    )
+    response = _fake_response(report, prompt_tokens=100, completion_tokens=50)
+
+    with patch("app.audit.openai_client.beta.chat.completions.parse", new=AsyncMock(return_value=response)), \
+         patch("app.audit.db.create_ai_evaluation_log", new=AsyncMock()) as create_log:
+        await audit.run_compliance_audit(session)
+
+    args = create_log.call_args.args
+    assert args[1] is False
+    assert args[8] == "Disclosure was cut off."  # not re-annotated
+
+
 async def test_run_compliance_audit_flags_account_on_stop_contact_request(session):
     session.log_lines = ["2026-01-01 00:00:00 [user] please stop calling me"]
     report = audit.EvaluationReport(
@@ -96,6 +197,34 @@ async def test_run_compliance_audit_swallows_openai_failure(session):
         await audit.run_compliance_audit(session)  # must not raise
 
     create_log.assert_not_awaited()
+
+
+# --- F1/F3: mini_miranda_passed and identity_verified_before_disclosure
+# are nullable -- "not applicable" (a wrong-person call, or a call that
+# ended before disclosure was due) is a legitimate third value, not a
+# forced True/False. ---
+async def test_run_compliance_audit_accepts_null_mini_miranda_and_identity(session):
+    session.log_lines = ["2026-01-01 00:00:00 [assistant] Hello, this is Cora... is Phoebe available?"]
+    report = audit.EvaluationReport(
+        mini_miranda_passed=None,
+        pii_redacted_correctly=True,
+        hallucination_detected=False,
+        identity_verified_before_disclosure=None,
+        prohibited_conduct_detected=False,
+        right_to_cease_honored=None,
+        tone_score=5,
+        judge_reasoning="Wrong person -- correctly withheld disclosure.",
+    )
+    response = _fake_response(report, prompt_tokens=100, completion_tokens=50)
+
+    with patch("app.audit.openai_client.beta.chat.completions.parse", new=AsyncMock(return_value=response)), \
+         patch("app.audit.db.create_ai_evaluation_log", new=AsyncMock()) as create_log:
+        await audit.run_compliance_audit(session)
+
+    create_log.assert_awaited_once()
+    args = create_log.call_args.args
+    assert args[1] is None  # mini_miranda_passed
+    assert args[4] is None  # identity_verified_before_disclosure
 
 
 async def test_run_compliance_audit_swallows_db_failure(session):

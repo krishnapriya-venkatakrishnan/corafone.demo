@@ -6,7 +6,7 @@ const LADDER = [
   { tier: "1. Full payment", total: "$1,000", max: "1", example: "$1,000 today" },
   { tier: "2. Downpayment + one", total: "$1,000", max: "2", example: "$750 today, $250 in two weeks" },
   { tier: "3. Settlement", total: "≥ $800 (max 20% off)", max: "3", example: "$266.67 / $266.67 / $266.66" },
-  { tier: "4. Payment plan", total: "$1,000", max: "4", example: "$250 × 4, weekly, biweekly or monthly" },
+  { tier: "4. Payment plan", total: "$1,000", max: "4", example: "$250 × 4 weekly or biweekly; $333.34 × 3 monthly" },
 ];
 
 export default function DecisionsPanel() {
@@ -67,7 +67,7 @@ export default function DecisionsPanel() {
         <h2 className="text-lg font-semibold text-black">The negotiation ladder</h2>
         <p className="text-sm text-neutral-700 max-w-[85ch]">Balance: $1,000, 180+ days delinquent.</p>
 
-        <div className="overflow-x-auto rounded-xl border border-neutral-200 max-w-4xl">
+        <div className="w-full overflow-x-auto rounded-xl border border-neutral-200 max-w-4xl">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-neutral-500 bg-neutral-50">
@@ -125,12 +125,18 @@ export default function DecisionsPanel() {
         </p>
 
         <p className="text-sm text-neutral-700 leading-relaxed">
-          <strong className="text-black">"Over 3 months" means calendar months, measured from the last payment.</strong>{" "}
-          Four monthly payments beginning today fall across 92 days; a flat 90-day rule would reject the
-          canonical monthly plan on a technicality of month lengths. Anchoring on the last payment rather
-          than the first also closes a loophole: measuring from the first would let a consumer defer the
-          start by two months and then take three monthly instalments, stretching an already 180-day
-          delinquent account across five.
+          <strong className="text-black">"Over 3 months" is read as an exclusive boundary, measured from the last payment.</strong>{" "}
+          A payment landing exactly on the three-calendar-month anniversary of the call is outside the
+          window, not on its edge. Anchoring on the last payment rather than the first closes a loophole:
+          measuring from the first would let a consumer defer the start by two months and then take three
+          monthly instalments, stretching an already 180-day delinquent account across five.
+        </p>
+        <p className="text-sm text-neutral-700 leading-relaxed">
+          The exclusive reading costs exactly one arrangement: four monthly payments beginning today span
+          92 days, landing the last payment precisely on that anniversary - now illegal. The floor still
+          caps every arrangement at four payments, so four still fit; just not on a monthly cadence -
+          weekly (28 days) and biweekly (42 days) both clear the window comfortably. A consumer paying
+          monthly is offered three payments of $333.34 instead of four of $250.
         </p>
 
         <p className="text-sm text-neutral-700 leading-relaxed">
@@ -157,10 +163,11 @@ export default function DecisionsPanel() {
           the final payment could push it a cent below the floor with no repair able to reach it.
         </p>
         <p className="text-sm text-neutral-700 leading-relaxed">
-          The scenario suite runs seven adversarial conversations against the live prompt and tools,
+          The scenario suite runs fourteen adversarial conversations against the live prompt and tools,
           including a consumer who hedges without committing, someone who is not the account holder, a
-          request to stop contact, and a deflection to "call me back later." Each is graded by an LLM
-          judge and by structural assertions on tool calls.
+          request to stop contact, a deflection to "call me back later," and ladder-specific cases like
+          holding out on a discount and refusing every offer without ever naming a figure. Each is graded
+          by an LLM judge and by structural assertions on tool calls.
         </p>
       </section>
 

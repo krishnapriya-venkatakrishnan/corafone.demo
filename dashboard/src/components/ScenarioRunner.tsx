@@ -7,6 +7,18 @@ function formatScenarioTitle(name: string): string {
   return `Scenario: ${words.join(" ")}`;
 }
 
+// A crashed run (OpenAI rate limit, timeout, network error) is not a
+// compliance failure -- it never produced a verdict at all, so it must
+// render distinctly (grey, "not run") and never be counted as pass or
+// fail, in either the per-row badge or the summary line below.
+function summarize(results: Record<string, ScenarioResult>) {
+  const values = Object.values(results);
+  const crashed = values.filter((r) => r.crashed).length;
+  const judged = values.filter((r) => !r.crashed);
+  const passed = judged.filter((r) => r.passed).length;
+  return { total: values.length, judged: judged.length, passed, crashed };
+}
+
 export default function ScenarioRunner() {
   const [scenarios, setScenarios] = useState<ScenarioInfo[]>([]);
   const [results, setResults] = useState<Record<string, ScenarioResult>>({});
@@ -66,6 +78,20 @@ export default function ScenarioRunner() {
             <p className="text-xs text-neutral-500 mt-0.5">
               Runs the real prompt and tools against scripted personas -- costs real OpenAI tokens.
             </p>
+            {Object.keys(results).length > 0 && (() => {
+              const { judged, passed, crashed } = summarize(results);
+              return (
+                <p className="text-xs text-neutral-500 mt-1.5">
+                  <span className="font-medium text-black">
+                    {passed}/{judged}
+                  </span>{" "}
+                  passed
+                  {crashed > 0 && (
+                    <span className="text-idle-fg"> · {crashed} not run (infrastructure error)</span>
+                  )}
+                </p>
+              );
+            })()}
           </div>
           <button
             onClick={handleRunAll}
@@ -103,12 +129,14 @@ export default function ScenarioRunner() {
                     {result && (
                       <span
                         className={`text-xs font-medium px-2.5 py-1 rounded-full border ${
-                          result.passed
+                          result.crashed
+                            ? "bg-idle-bg text-idle-fg border-neutral-200"
+                            : result.passed
                             ? "bg-pass-bg text-pass-fg border-emerald-200"
                             : "bg-fail-bg text-fail-fg border-red-200"
                         }`}
                       >
-                        {result.passed ? "passed" : "failed"}
+                        {result.crashed ? "not run" : result.passed ? "passed" : "failed"}
                       </span>
                     )}
                   </button>
@@ -128,6 +156,22 @@ export default function ScenarioRunner() {
                     </div>
                     {!result ? (
                       <p className="text-neutral-500">Not run yet.</p>
+                    ) : result.crashed ? (
+                      <div className="bg-idle-bg border border-neutral-200 rounded-lg p-3">
+                        <p className="text-idle-fg uppercase tracking-wide text-[10px] mb-1">
+                          Not run -- infrastructure error
+                        </p>
+                        <p className="text-neutral-600">
+                          This scenario never reached a verdict (an OpenAI API failure, not a
+                          compliance result) -- it's excluded from the pass count above. Use Run to
+                          retry it individually.
+                        </p>
+                        {result.error && (
+                          <p className="text-neutral-500 mt-1 font-mono text-[11px] break-all">
+                            {result.error}
+                          </p>
+                        )}
+                      </div>
                     ) : (
                       <>
                         {result.hard_failures.length > 0 && (

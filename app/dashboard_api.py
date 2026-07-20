@@ -5,6 +5,7 @@ Layer 3 test suite (tests/scenarios/) as a product feature, reusing it
 in-process rather than reimplementing it or shelling out to pytest."""
 
 import json
+import logging
 from datetime import date, datetime
 from typing import Any
 
@@ -16,6 +17,7 @@ from . import config, db, negotiation, storage, tools
 from .session import CallSession
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
+logger = logging.getLogger("corafone")
 
 
 # --- Response models ---
@@ -61,6 +63,16 @@ class CallRecord(BaseModel):
     tone_score: int | None = None
     judge_reasoning: str | None = None
     judge_cost_usd: float | None = None
+    # The agreement's own terms, if this call reached one (joined from
+    # payment_plans by session_id -- see db.get_calls). All null together
+    # when no agreement was recorded this call.
+    plan_tier: str | None = None
+    plan_total_amount: float | None = None
+    plan_num_installments: int | None = None
+    plan_payments_breakdown: str | None = None
+    plan_payment_dates: str | None = None
+    plan_discount_counters_issued: int | None = None
+    plan_date_counters_issued: int | None = None
 
 
 class PaymentPlanRecord(BaseModel):
@@ -101,6 +113,15 @@ class ScenarioResult(BaseModel):
     scenario: str
     expected_outcome: str
     passed: bool
+    # True when the scenario never actually ran to a verdict -- an OpenAI
+    # API failure (rate limit, timeout, network error), not a compliance
+    # failure. `passed` is meaningless when this is True (always False, so
+    # older/naive callers that only check `passed` still fail closed
+    # rather than silently counting a crash as a pass) -- the dashboard
+    # must check `crashed` first and render it as "not run," excluded
+    # from any pass count, never identically to a genuine failure.
+    crashed: bool = False
+    error: str | None = None
     reasoning: str
     hard_failures: list[str]
     transcript: list[str]
@@ -117,6 +138,13 @@ class ValidateRequest(BaseModel):
     cadence: Any
     first_payment_date: Any
     discount_already_countered: bool = False
+    # Optional explicit per-payment split. When present it's authoritative:
+    # validate() below derives number_of_payments from its length, exactly
+    # as negotiation.negotiate() does for the live agent (see that
+    # function's docstring, resolution step 2) -- an even split and an
+    # uneven split of the same total are different proposals, and the
+    # playground exists to make that distinction visible.
+    payments: list[float] | None = None
 
 
 class ValidateOffer(BaseModel):
@@ -132,6 +160,10 @@ class ValidateResponse(BaseModel):
     reason: str
     offer: ValidateOffer | None
     violations: list[str]
+    # Machine-readable, never spoken by the live agent (see Verdict's
+    # docstring) -- shown here, muted, for the same reason `violations` is:
+    # operator insight into what the validator actually did.
+    agent_note: str | None = None
 
 
 # --- Read-only endpoints ---
@@ -185,9 +217,13 @@ async def validate(body: ValidateRequest) -> dict:
     proposal = tools._proposal_from_args(
         {
             "total_amount": body.total_amount,
-            "number_of_payments": body.number_of_payments,
+            # payments, when given, is authoritative for the payment count --
+            # mirrors negotiate()'s resolution step 2, which overrides any
+            # conflicting number_of_payments with len(payments).
+            "number_of_payments": len(body.payments) if body.payments else body.number_of_payments,
             "cadence": body.cadence,
             "first_payment_date": body.first_payment_date,
+            "payments": body.payments,
         }
     )
 
@@ -203,6 +239,7 @@ async def validate(body: ValidateRequest) -> dict:
         "reason": verdict.reason,
         "offer": tools._offer_to_dict(offer) if offer else None,
         "violations": verdict.violations,
+        "agent_note": verdict.agent_note,
     }
 
 
@@ -229,27 +266,70 @@ async def _run_one_scenario(scenario) -> dict:
     # visibly scoped to the one feature that needs it.
     from tests.mock_db import FakeWebSocket
     from tests.scenarios import structural_checks
-    from tests.scenarios.harness import run_conversation
+    from tests.scenarios.harness import TEST_ACCOUNT_BALANCE, run_conversation
     from tests.scenarios.judge import judge_scenario
 
-    session = CallSession(websocket=FakeWebSocket(), account_id=42)
-    result = await run_conversation(scenario.consumer_persona, session)
+    # account_balance must match the balance build_system_prompt was given
+    # (see run_conversation) -- app/tools.py reads session.account_balance
+    # directly for every tool call, and its default (None) makes
+    # Decimal(str(None)) raise InvalidOperation on the very first call.
+    session = CallSession(websocket=FakeWebSocket(), account_id=42, account_balance=TEST_ACCOUNT_BALANCE)
 
-    # One-sentence-per-turn is deliberately not checked here -- it's a real,
-    # still-enforced regression guard in the CI suite (tests/scenarios/
-    # test_scenarios.py), but on gpt-4o-mini it recurs often enough on
-    # information-dense turns that flagging it in this live demo view was
-    # just noise on top of the judge's actual pass/fail verdict.
-    hard_failures: list[str] = []
-    if structural_checks.tool_called_at_most_once(result.tool_calls):
-        hard_failures.append("tool(s) called more than once")
+    # Everything below calls OpenAI (the agent, the persona, the judge) --
+    # a real infrastructure failure (rate limit, timeout, transient network
+    # error) must not be scored as a compliance failure, and -- for the
+    # run-all stream -- must not kill the rest of the batch either (see
+    # _scenario_event_stream, which relies on this never raising).
+    try:
+        result = await run_conversation(scenario.consumer_persona, session)
 
-    judgment = await judge_scenario(result.transcript, scenario.expected_outcome, result.tool_calls)
+        # One-sentence-per-turn is deliberately not checked here -- it's a
+        # real, still-enforced regression guard in the CI suite (tests/
+        # scenarios/test_scenarios.py), but on gpt-4o-mini it recurs often
+        # enough on information-dense turns that flagging it in this live
+        # demo view was just noise on top of the judge's actual pass/fail
+        # verdict.
+        hard_failures: list[str] = []
+        if structural_checks.tool_called_at_most_once(result.tool_calls):
+            hard_failures.append("tool(s) called more than once")
+        # I1's provenance/record/escalation checks are cheap, deterministic
+        # text comparisons against the tool log (not an LLM judgement), so
+        # -- unlike the one-sentence-per-turn heuristic above -- they're
+        # worth surfacing here too, not just in the CI suite.
+        if structural_checks.assistant_lines_are_grounded(result.transcript):
+            hard_failures.append("assistant spoke a figure or date not grounded in a tool result")
+        if structural_checks.record_agreement_always_follows_matching_accept(result.transcript):
+            hard_failures.append("record_agreement without a matching prior ACCEPT")
+        if structural_checks.escalation_only_after_no_agreement(result.transcript):
+            hard_failures.append("escalation phrasing without a NO_AGREEMENT verdict")
+        # The most severe failure mode this project has watched happen
+        # live: the agent tells the customer their agreement is set with
+        # no successful record_agreement behind it. Surfaced here, not
+        # just the CI suite, precisely because this is the demo view a
+        # human actually watches run.
+        if structural_checks.success_claimed_without_a_recorded_agreement(result.transcript):
+            hard_failures.append("claimed an agreement was recorded without a successful record_agreement")
+
+        judgment = await judge_scenario(result.transcript, scenario.expected_outcome, result.tool_calls)
+    except Exception as exc:
+        logger.exception("Scenario %r crashed before producing a verdict.", scenario.name)
+        return {
+            "scenario": scenario.name,
+            "expected_outcome": scenario.expected_outcome,
+            "passed": False,
+            "crashed": True,
+            "error": str(exc),
+            "reasoning": "",
+            "hard_failures": [],
+            "transcript": [],
+        }
 
     return {
         "scenario": scenario.name,
         "expected_outcome": scenario.expected_outcome,
         "passed": judgment.outcome_met,
+        "crashed": False,
+        "error": None,
         "reasoning": judgment.reasoning,
         "hard_failures": hard_failures,
         "transcript": result.transcript,

@@ -10,14 +10,14 @@
 <link rel="stylesheet" href="style.css" />
 </head>
 
-<body class="bg-white text-black min-h-screen flex items-center justify-center font-sans antialiased overflow-hidden">
+<body class="bg-white text-black min-h-screen flex items-center justify-center font-sans antialiased overflow-x-hidden">
 
   <!-- Ambient background glow -->
   <div class="pointer-events-none fixed inset-0 flex items-center justify-center">
     <div class="w-[36rem] h-[36rem] bg-[var(--periwinkle-tint)] rounded-full blur-3xl"></div>
   </div>
 
-  <main class="relative w-full max-w-sm mx-auto flex flex-col items-center gap-10 px-6 py-12">
+  <main class="relative w-full max-w-sm mx-auto flex flex-col items-center gap-6 px-6 py-6">
 
 
     <!-- Account picker: pick which demo account to call as (hidden when
@@ -36,11 +36,11 @@
         <span id="statusDot" class="w-2 h-2 rounded-full bg-neutral-600 transition-colors duration-300"></span>
         <span id="statusText">Disconnected</span>
       </div>
-      <div id="timer" class="text-3xl font-mono tabular-nums text-black tracking-wider" style="font-variant-numeric: tabular-nums;">00:00</div>
+      <div id="timer" class="text-2xl font-mono tabular-nums text-black tracking-wider" style="font-variant-numeric: tabular-nums;">00:00</div>
     </div>
 
     <!-- Mic Button + call circle -->
-    <div class="relative flex items-center justify-center w-52 h-52">
+    <div class="relative flex items-center justify-center w-44 h-44">
       <!-- Always-on, dim ambient circle: the resting state before/between calls. -->
       <div class="absolute inset-0 rounded-full overflow-hidden">
         <div class="absolute inset-[-25%] call-gradient call-gradient-idle"></div>
@@ -60,13 +60,13 @@
         id="micButton"
         type="button"
         aria-label="Connect call"
-        class="relative z-10 w-28 h-28 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center
+        class="relative z-10 w-24 h-24 rounded-full bg-neutral-800 border border-neutral-700 flex items-center justify-center
                text-neutral-300 shadow-xl transition-all duration-300 ease-out
                hover:scale-105 active:scale-95
                focus:outline-none focus:ring-2 focus:ring-[var(--periwinkle-soft)] disabled:opacity-50 disabled:cursor-not-allowed"
       >
         <!-- Mic icon (SVG, swaps to a "hang up" icon while connected) -->
-        <svg id="micIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="w-10 h-10">
+        <svg id="micIcon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="w-8 h-8">
           <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
           <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
           <line x1="12" y1="19" x2="12" y2="23"></line>
@@ -75,7 +75,7 @@
       </button>
     </div>
 
-    <p id="helperText" class="text-xs text-neutral-500 text-center max-w-55">
+    <p id="helperText" class="text-xs text-neutral-500 text-center max-w-56">
       Tap the microphone to start a live call with Cora.
     </p>
 

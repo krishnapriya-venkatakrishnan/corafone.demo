@@ -55,7 +55,7 @@ export default function CallFrame({ active }: { active: boolean }) {
               <div className="absolute inset-[-25%] idle-call-gradient" />
             </div>
           </div>
-          <p className="text-xs text-neutral-500 max-w-55 text-center">
+          <p className="text-xs text-neutral-500 max-w-56 text-center">
             Opens a live call with Cora as the demo account. Frame the shot first, since this dials
             the moment you click.
           </p>

@@ -10,7 +10,7 @@ An AI voice agent that makes outbound debt-collection calls — holds a real spo
 - **Agentic actions, not just talk** — the agent can settle the balance in full or set up a 2-6 month installment plan, each backed by a real, idempotency-guarded database write. It has no callback-scheduling tool: a request to be called back later is handled entirely in conversation (acknowledged, redirected back to settlement/payment plan), never as a booked action.
 - **Deterministic compliance gates** — a stop-contact request permanently flags the account for manual review (`requires_manual_review`), set in code, not left to an LLM's judgment (see Known limitations for what currently reads that flag).
 - **Post-call compliance audit** — every transcript is graded by an LLM judge for the Mini-Miranda disclosure, identity verification, hallucinated terms, prohibited conduct, and tone.
-- **Scenario test suite** — seven adversarial conversation scenarios (happy path, vague agreement, wrong person, stop-contact request, etc.), run against the real prompt and tools with a mocked DB, graded by structural checks and an LLM judge. Runnable from the dashboard or CI.
+- **Scenario test suite** — fourteen adversarial conversation scenarios (happy path, vague agreement, wrong person, stop-contact request, discount holds, capacity limits, etc.), run against the real prompt and tools with a mocked DB, graded by structural checks and an LLM judge. Runnable from the dashboard or CI.
 - **Dashboard** — account status, compliance rollup, call history with full transcripts, active payment plans/callbacks, and a live scenario-test runner.
 
 ## Architecture

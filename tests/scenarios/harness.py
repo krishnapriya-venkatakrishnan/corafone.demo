@@ -21,9 +21,17 @@ _MAX_TOOL_CALLS_PER_TURN = 5  # safety cap, not a realistic expectation
 
 # Pinned fixture identity/balance -- account context is per-call in the live
 # system (app/main.py resolves it from Supabase), but Layer 3 needs a fixed,
-# deterministic account regardless of whatever's seeded live.
+# deterministic account regardless of whatever's seeded live. Aligned to
+# config.DEMO_ACCOUNT_BALANCE (not a separately-chosen test value) so the
+# ladder numbers scenario transcripts exercise -- the $250 floor, $800
+# settlement ceiling, $750/$250 down-payment split -- are the same numbers
+# the real deployed account uses, not a scaled-down set with a different
+# floor and ceiling. Decimal, not float -- build_system_prompt's
+# account_balance param is typed Decimal (asyncpg returns NUMERIC columns
+# as Decimal natively in the real call path; see app/session.py), and
+# app/config.py's _speak_dollar_amount calls .quantize() on it directly.
 TEST_CUSTOMER_NAME = "Phoebe Buffay"
-TEST_ACCOUNT_BALANCE = 500.00
+TEST_ACCOUNT_BALANCE = config.DEMO_ACCOUNT_BALANCE
 
 
 def _to_openai_tool(flat_schema: dict) -> dict:
@@ -41,7 +49,7 @@ def _to_openai_tool(flat_schema: dict) -> dict:
 
 
 _TOOLS = [
-    _to_openai_tool(config.VALIDATE_CONSUMER_PROPOSAL_FUNCTION_SCHEMA),
+    _to_openai_tool(config.NEGOTIATE_FUNCTION_SCHEMA),
     _to_openai_tool(config.RECORD_AGREEMENT_FUNCTION_SCHEMA),
 ]
 
@@ -93,8 +101,15 @@ async def _collector_turn(
             # lines so the judge (tests/scenarios/judge.py) can see exactly
             # when a tool fired relative to the dialogue, not just that it
             # fired at some point -- ambiguous ordering otherwise leads it to
-            # guess wrong about before/after a confirmation.
+            # guess wrong about before/after a confirmation. The args/result
+            # lines (G1) give both the judge and the structural provenance
+            # assertion (structural_checks.assistant_lines_are_grounded)
+            # ground truth for what was actually authorized this call --
+            # every dollar figure/date/count Cora speaks should trace back
+            # to one of these, or to the customer's own words.
             result.transcript.append(f"[tool called: {tool_call.function.name}]")
+            result.transcript.append(f"[tool args: {json.dumps(args)}]")
+            result.transcript.append(f"[tool result: {json.dumps(tool_result)}]")
             messages.append(
                 {"role": "tool", "tool_call_id": tool_call.id, "content": json.dumps(tool_result)}
             )
@@ -132,6 +147,19 @@ async def run_conversation(
         result.transcript.append(f"user: {customer_reply}")
         consumer_view.append({"role": "user", "content": customer_reply})
         collector_messages.append({"role": "user", "content": customer_reply})
+        # A new customer utterance is a new conversational turn -- mirrors
+        # app/voice_agent.py's ConversationText handling exactly. Without
+        # this, session.turn_id stayed 0 for the entire simulated call, so
+        # app/tools.py's turn-scoped gate-shopping guard saw every later
+        # call as still "this turn": the first discount ask spends the
+        # gate and sets gate_spent_turn = 0, and every subsequent call for
+        # the rest of the conversation then matched gate_spent_turn ==
+        # turn_id (0 == 0) and replayed that first, still-locked verdict
+        # forever -- a customer holding firm a second time could never
+        # actually reach the now-unlocked gate in this harness, even
+        # though the exact same sequence unlocks correctly in production
+        # and in every direct negotiation.py unit test.
+        session.turn_id += 1
 
         # Cora always gets a turn to react -- including calling a tool and
         # confirming it -- even if the customer's message already included a

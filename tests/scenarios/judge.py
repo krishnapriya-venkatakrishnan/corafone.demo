@@ -37,7 +37,12 @@ async def judge_scenario(
                     "expected in this specific scenario -- judge only against that description. "
                     "The transcript includes `[tool called: X]` lines placed exactly where each "
                     "tool fired chronologically relative to the dialogue -- use those, not wording "
-                    "or tone, to judge whether/when/how many times a tool was actually called."
+                    "or tone, to judge whether/when/how many times a tool was actually called. Each "
+                    "is followed by `[tool args: ...]` and `[tool result: ...]` lines showing "
+                    "exactly what was sent and what the tool actually authorized -- use these as "
+                    "ground truth for whether a figure, date, or refusal Cora later spoke was "
+                    "faithful to the tool, invented, or dropped a detail (e.g. a floor-minimum "
+                    "sentence)."
                 ),
             },
             {

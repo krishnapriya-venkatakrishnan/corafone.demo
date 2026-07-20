@@ -10,6 +10,10 @@ interface FormState {
   cadence: Cadence;
   firstPaymentDate: string;
   discountAlreadyCountered: boolean;
+  // Comma-separated per-payment amounts, e.g. "600, 400". Empty means "no
+  // explicit split" -- numberOfPayments drives an even split as before.
+  // Non-empty is authoritative: it drives the payment count instead.
+  paymentsText: string;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -18,7 +22,39 @@ const DEFAULT_FORM: FormState = {
   cadence: "once",
   firstPaymentDate: today(),
   discountAlreadyCountered: false,
+  paymentsText: "",
 };
+
+function parsePaymentsEntries(text: string): string[] {
+  return text
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+function formatMoney(n: number): string {
+  return `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
+// Null means "nothing to validate" (empty) or "valid". Checked at submit
+// time so a mismatched split never reaches the network -- the backend
+// would just reject it with the same information, later and slower.
+function paymentsValidationError(paymentsText: string, totalAmount: string): string | null {
+  const entries = parsePaymentsEntries(paymentsText);
+  if (entries.length === 0) return null;
+
+  const values = entries.map(Number);
+  if (values.some((v) => !Number.isFinite(v) || v <= 0)) {
+    return "Every payment must be a positive number.";
+  }
+
+  const total = Number(totalAmount);
+  const sum = values.reduce((a, b) => a + b, 0);
+  if (Number.isFinite(total) && Math.round(sum * 100) !== Math.round(total * 100)) {
+    return `These add up to ${formatMoney(sum)}, but the total is ${formatMoney(total)}`;
+  }
+  return null;
+}
 
 // Labeled by what the consumer said, not which rule ends up firing -- a
 // label tied to a violation code can be contradicted by whichever codes
@@ -27,19 +63,31 @@ const DEFAULT_FORM: FormState = {
 const PRESETS: { label: string; form: FormState }[] = [
   {
     label: "Pay in full",
-    form: { totalAmount: "1000", numberOfPayments: "1", cadence: "once", firstPaymentDate: today(), discountAlreadyCountered: false },
+    form: { totalAmount: "1000", numberOfPayments: "1", cadence: "once", firstPaymentDate: today(), discountAlreadyCountered: false, paymentsText: "" },
   },
   {
     label: "Lowball - $600 today",
-    form: { totalAmount: "600", numberOfPayments: "1", cadence: "once", firstPaymentDate: today(), discountAlreadyCountered: false },
+    form: { totalAmount: "600", numberOfPayments: "1", cadence: "once", firstPaymentDate: today(), discountAlreadyCountered: false, paymentsText: "" },
   },
   {
     label: "Instalments too small",
-    form: { totalAmount: "800", numberOfPayments: "4", cadence: "monthly", firstPaymentDate: today(), discountAlreadyCountered: true },
+    form: { totalAmount: "800", numberOfPayments: "4", cadence: "monthly", firstPaymentDate: today(), discountAlreadyCountered: true, paymentsText: "" },
   },
   {
     label: "Too many instalments",
-    form: { totalAmount: "1000", numberOfPayments: "6", cadence: "biweekly", firstPaymentDate: today(), discountAlreadyCountered: false },
+    form: { totalAmount: "1000", numberOfPayments: "6", cadence: "biweekly", firstPaymentDate: today(), discountAlreadyCountered: false, paymentsText: "" },
+  },
+  // Same total, same count, two different splits -- an even $500/$500 is
+  // legal, but $900/$100 trips payment_below_floor even though the total
+  // never changed. That distinction is invisible unless per-payment
+  // amounts are shown, not just the total and count (see the result panel).
+  {
+    label: "Uneven split",
+    form: { totalAmount: "1000", numberOfPayments: "2", cadence: "biweekly", firstPaymentDate: today(), discountAlreadyCountered: false, paymentsText: "600, 400" },
+  },
+  {
+    label: "Below floor",
+    form: { totalAmount: "1000", numberOfPayments: "2", cadence: "biweekly", firstPaymentDate: today(), discountAlreadyCountered: false, paymentsText: "900, 100" },
   },
 ];
 
@@ -81,16 +129,29 @@ export default function PlaygroundPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const paymentsEntries = parsePaymentsEntries(form.paymentsText);
+  const paymentsFilled = paymentsEntries.length > 0;
+  const paymentsError = paymentsValidationError(form.paymentsText, form.totalAmount);
+
   async function submit(f: FormState) {
+    const entries = parsePaymentsEntries(f.paymentsText);
+    if (paymentsValidationError(f.paymentsText, f.totalAmount)) {
+      // Inline error is already rendered from `form` below -- nothing to
+      // send, the backend would just reject this the same way, later.
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
+      const payments = entries.length > 0 ? entries.map(Number) : undefined;
       const response = await validateProposal({
         total_amount: Number(f.totalAmount),
-        number_of_payments: Number(f.numberOfPayments),
+        number_of_payments: payments ? payments.length : Number(f.numberOfPayments),
         cadence: f.cadence,
         first_payment_date: f.firstPaymentDate,
         discount_already_countered: f.discountAlreadyCountered,
+        ...(payments ? { payments } : {}),
       });
       setResult(response);
     } catch (err) {
@@ -146,15 +207,39 @@ export default function PlaygroundPanel() {
           </div>
 
           <div>
+            <label className="block text-xs font-medium text-neutral-600 mb-1">
+              Per-payment amounts (optional)
+            </label>
+            <input
+              type="text"
+              placeholder="600, 400"
+              value={form.paymentsText}
+              onChange={(e) => setForm({ ...form, paymentsText: e.target.value })}
+              className="w-full px-3 py-2 rounded-lg border border-neutral-200 text-sm text-black focus:outline-none focus:ring-2 focus:ring-periwinkle-soft"
+            />
+            {paymentsError ? (
+              <p className="text-xs text-fail-fg mt-1">{paymentsError}</p>
+            ) : paymentsFilled ? (
+              <p className="text-xs text-neutral-500 mt-1">
+                {paymentsEntries.length} payment{paymentsEntries.length === 1 ? "" : "s"} derived from this list.
+              </p>
+            ) : null}
+          </div>
+
+          <div>
             <label className="block text-xs font-medium text-neutral-600 mb-1">Number of payments</label>
             <input
               type="number"
               step="1"
               min="1"
-              value={form.numberOfPayments}
+              value={paymentsFilled ? paymentsEntries.length : form.numberOfPayments}
+              disabled={paymentsFilled}
               onChange={(e) => setForm({ ...form, numberOfPayments: e.target.value })}
-              className="w-full px-3 py-2 rounded-lg border border-neutral-200 text-sm text-black focus:outline-none focus:ring-2 focus:ring-periwinkle-soft"
+              className="w-full px-3 py-2 rounded-lg border border-neutral-200 text-sm text-black focus:outline-none focus:ring-2 focus:ring-periwinkle-soft disabled:bg-neutral-100 disabled:text-neutral-400"
             />
+            {paymentsFilled && (
+              <p className="text-xs text-neutral-500 mt-1">Driven by the per-payment list above.</p>
+            )}
           </div>
 
           <div>
@@ -193,7 +278,7 @@ export default function PlaygroundPanel() {
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !!paymentsError}
             className="px-4 py-2 rounded-lg text-sm font-medium bg-periwinkle hover:bg-periwinkle-soft disabled:bg-neutral-100 disabled:text-neutral-400 text-white transition-colors"
           >
             {loading ? "Checking…" : "Check"}
@@ -224,7 +309,7 @@ export default function PlaygroundPanel() {
               {result.offer && (
                 <div>
                   <p className="text-xs text-neutral-500 mb-2">Resulting schedule ({result.offer.tier.replaceAll("_", " ")})</p>
-                  <div className="overflow-x-auto rounded-xl border border-neutral-200">
+                  <div className="w-full overflow-x-auto rounded-xl border border-neutral-200">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="text-left text-xs text-neutral-500 bg-neutral-50">
@@ -244,6 +329,17 @@ export default function PlaygroundPanel() {
                       </tbody>
                     </table>
                   </div>
+                </div>
+              )}
+
+              {result.agent_note && (
+                <div>
+                  <p className="text-xs text-neutral-500 mb-1.5">
+                    Diagnostic note -- the agent reads this, but never speaks it
+                  </p>
+                  <p className="text-xs text-neutral-500 bg-idle-bg border border-neutral-200 rounded-lg px-3 py-2">
+                    {result.agent_note}
+                  </p>
                 </div>
               )}
 

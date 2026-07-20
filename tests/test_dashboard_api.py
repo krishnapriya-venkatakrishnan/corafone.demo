@@ -162,3 +162,70 @@ def test_run_one_scenario_404s_for_unknown_name():
     response = client.get("/api/dashboard/scenarios/run/not_a_real_scenario")
 
     assert response.status_code == 404
+
+
+def test_run_one_scenario_gives_the_session_a_real_account_balance(monkeypatch):
+    """Regression: CallSession's account_balance defaults to None, and
+    app/tools.py reads session.account_balance directly for every tool
+    call -- Decimal(str(None)) raises InvalidOperation, which every tool
+    call in a live scenario run hit silently (caught and reported back to
+    the model as a generic "system issue" error) until this was fixed.
+    Mocks run_conversation itself -- no real OpenAI calls -- and just
+    inspects the CallSession it was handed."""
+    from dataclasses import dataclass, field
+
+    from tests.scenarios.harness import TEST_ACCOUNT_BALANCE
+
+    captured_sessions = []
+
+    @dataclass
+    class _FakeResult:
+        transcript: list = field(default_factory=list)
+        tool_calls: list = field(default_factory=list)
+
+    async def fake_run_conversation(consumer_persona, session, max_turns=10):
+        captured_sessions.append(session)
+        return _FakeResult()
+
+    async def fake_judge_scenario(transcript, expected_outcome, tool_calls=None):
+        from tests.scenarios.judge import ScenarioJudgment
+        return ScenarioJudgment(outcome_met=True, reasoning="stub")
+
+    monkeypatch.setattr("tests.scenarios.harness.run_conversation", fake_run_conversation)
+    monkeypatch.setattr("tests.scenarios.judge.judge_scenario", fake_judge_scenario)
+
+    from tests.mock_db import mocked_db
+
+    with mocked_db():
+        response = client.get("/api/dashboard/scenarios/run/happy_path_full_payment")
+
+    assert response.status_code == 200
+    assert len(captured_sessions) == 1
+    assert captured_sessions[0].account_balance == TEST_ACCOUNT_BALANCE
+
+
+def test_run_one_scenario_reports_infrastructure_failure_as_crashed_not_failed(monkeypatch):
+    """An OpenAI API failure (rate limit, timeout, network error) mid-run
+    must never be scored as a compliance failure -- it never produced a
+    verdict at all. crashed=True, passed=False (so a caller that only
+    checks `passed` still fails closed), and the run-all stream must not
+    propagate the exception (this endpoint call itself must still 200)."""
+    async def fake_run_conversation_that_rate_limits(consumer_persona, session, max_turns=10):
+        raise RuntimeError("Rate limit reached for gpt-4o-mini ... (simulated)")
+
+    monkeypatch.setattr(
+        "tests.scenarios.harness.run_conversation", fake_run_conversation_that_rate_limits
+    )
+
+    from tests.mock_db import mocked_db
+
+    with mocked_db():
+        response = client.get("/api/dashboard/scenarios/run/happy_path_full_payment")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["crashed"] is True
+    assert body["passed"] is False
+    assert "Rate limit" in body["error"]
+    assert body["hard_failures"] == []
+    assert body["transcript"] == []

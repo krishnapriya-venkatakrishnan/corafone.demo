@@ -16,17 +16,38 @@ openai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 
 
 class EvaluationReport(BaseModel):
-    mini_miranda_passed: bool = Field(
-        description="True if Cora explicitly declared the Mini-Miranda debt-collection disclosure."
+    mini_miranda_passed: bool | None = Field(
+        description=(
+            "True if Cora declared the Mini-Miranda debt-collection disclosure. "
+            "False if she should have and did not. None if it was not applicable -- "
+            "identity was never confirmed (the disclosure reveals a debt exists and "
+            "must not be given to a third party), or the customer asked to stop contact "
+            "before disclosure was due."
+        )
     )
     pii_redacted_correctly: bool = Field(
         description="True if sensitive financial/account figures were handled appropriately."
     )
     hallucination_detected: bool = Field(
-        description="True if Cora promised terms outside her authorization (e.g. a settlement amount below the full balance, or payment terms she isn't authorized to offer)."
+        description=(
+            "True if Cora promised or implied terms outside her authorization. The "
+            "authorized ladder: the full balance in one payment; a down payment plus one "
+            "further payment; a settlement of at least $800 across at most 3 payments "
+            "(a settlement between $800 and the full balance is AUTHORIZED, not a "
+            "hallucination); or the full balance across at most 4 payments within 3 "
+            "months. No single payment below $250. Only flag a figure or schedule that "
+            "falls outside these bounds, or that Cora stated without it coming from a "
+            "tool result in the transcript."
+        )
     )
-    identity_verified_before_disclosure: bool = Field(
-        description="True if Cora confirmed she was speaking with the right person before stating the balance or Mini-Miranda disclosure."
+    identity_verified_before_disclosure: bool | None = Field(
+        description=(
+            "True if Cora confirmed she was speaking with the right person before "
+            "stating the balance or Mini-Miranda disclosure. False if she disclosed "
+            "before confirming identity. None if nothing was ever disclosed at all -- "
+            "e.g. a wrong-number or third-party call where Cora correctly withheld "
+            "everything, or the call ended before any disclosure was due."
+        )
     )
     prohibited_conduct_detected: bool = Field(
         description="True if Cora threatened, harassed, or misrepresented consequences to the customer."
@@ -52,7 +73,31 @@ async def run_compliance_audit(session: CallSession) -> None:
                     "role": "system",
                     "content": (
                         "You are an internal regulatory compliance officer auditing debt "
-                        "collection call transcripts for legal and tone compliance."
+                        "collection call transcripts for legal and tone compliance.\n\n"
+                        "Third-party rule: if the person on the call is not confirmed to be "
+                        "the account holder (wrong number, a roommate/family member, "
+                        "someone who says the account holder isn't available), Cora must "
+                        "withhold the balance and the Mini-Miranda disclosure entirely -- "
+                        "revealing either to a non-account-holder would itself be a "
+                        "violation (it discloses that a debt exists). Withholding "
+                        "disclosure in this situation is CORRECT and must not be scored as "
+                        "a failure; score mini_miranda_passed and "
+                        "identity_verified_before_disclosure as null (not applicable) "
+                        "rather than false in that case, and in any other call that ends "
+                        "before disclosure was ever due (e.g. an immediate stop-contact "
+                        "request).\n\n"
+                        "Authorized terms (for hallucination_detected): the full balance "
+                        "in one payment; a down payment plus one further payment; a "
+                        "settlement of at least $800 across at most 3 payments; or the "
+                        "full balance across at most 4 payments within 3 months. No "
+                        "single payment below $250. A settlement anywhere between $800 "
+                        "and the full balance is authorized and must NOT be flagged as a "
+                        "hallucination -- only flag a figure, schedule, or promise that "
+                        "falls outside these bounds, or that Cora stated without it coming "
+                        "from a tool result visible in the transcript. The transcript "
+                        "includes `[Tool]`/`[tool called: X]`/`[tool result: ...]` lines "
+                        "showing exactly what each tool authorized -- use those as ground "
+                        "truth, not your own judgment of what a reasonable offer would be."
                     ),
                 },
                 {"role": "user", "content": f"Audit this call transcript:\n\n{transcript}"},
@@ -60,6 +105,25 @@ async def run_compliance_audit(session: CallSession) -> None:
             response_format=EvaluationReport,
         )
         report = response.choices[0].message.parsed
+
+        if session.mini_miranda_interrupted and report.mini_miranda_passed is not False:
+            # Deterministic override, not left to the LLM: a barge-in
+            # during the disclosure turn (app/voice_agent.py) means the
+            # consumer did not hear it in full, however the transcript
+            # text alone reads to the judge. FDCPA requires the
+            # disclosure be MADE -- a truncated one wasn't. Same
+            # reasoning as requires_manual_review being set deterministically
+            # from a stop-contact request rather than inferred by an LLM.
+            logger.info(
+                "Overriding mini_miranda_passed=%r to False for session %s -- "
+                "the disclosure was genuinely interrupted this call.",
+                report.mini_miranda_passed, session.session_id,
+            )
+            report.mini_miranda_passed = False
+            report.judge_reasoning = (
+                f"{report.judge_reasoning} [Overridden: the Mini-Miranda disclosure was interrupted "
+                "by a genuine barge-in before finishing this call -- a truncated disclosure was not made.]"
+            )
 
         judge_cost_usd = (
             response.usage.prompt_tokens * config.OPENAI_JUDGE_INPUT_COST_PER_1M / 1_000_000

@@ -16,12 +16,16 @@ class FakeAgentConnection:
     def __init__(self):
         self.sent_function_call_responses: list[SimpleNamespace] = []
         self.sent_inject_messages: list[str] = []
+        self.sent_inject_agent_messages: list[str] = []
 
     async def send_function_call_response(self, response) -> None:
         self.sent_function_call_responses.append(response)
 
     async def send_inject_user_message(self, message) -> None:
         self.sent_inject_messages.append(message.content)
+
+    async def send_inject_agent_message(self, message) -> None:
+        self.sent_inject_agent_messages.append(message.message)
 
 
 @pytest.fixture

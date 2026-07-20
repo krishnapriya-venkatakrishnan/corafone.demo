@@ -80,28 +80,39 @@ async def create_payment_plan(
     payments_breakdown: str | None = None,
     discount_counters_issued: int = 0,
     date_counters_issued: int = 0,
+    session_id: str | None = None,
+    tier: str | None = None,
+    payment_dates: str | None = None,
 ) -> None:
     """`amount_per_installment` is the average (total_amount / num_installments)
     so the dashboard's "N x $X = total" display is always internally
     consistent, even for an uneven-split agreement. `payments_breakdown` is
     the exact per-payment amounts, comma-separated in order, for whenever
-    something needs the real numbers rather than the average.
+    something needs the real numbers rather than the average; `payment_dates`
+    is the parallel comma-separated ISO dates, so the Call Report
+    (app/dashboard_api.py's get_calls) can render the two together as the
+    agreed schedule without reconstructing date arithmetic client-side.
     discount/date_counters_issued record how many times each concession
     gate fired before this agreement, so the dashboard can distinguish
     accepting the opening offer from holding out on a discount or a date.
-    Written for every agreement, including single payments -- see
-    app/tools.py's _persist_agreement, which also closes the account via
-    apply_settlement for n=1, so this always sets 'PAYMENT_PLAN_ACTIVE'
-    here and lets that second call overwrite it to 'SETTLED' when
-    applicable, rather than branching on installment count itself."""
+    `session_id` ties this agreement to the call that produced it --
+    without it, a plan can only be correlated to a call by timestamp, which
+    breaks under concurrent callers and the reset-and-supersede history
+    (see reset_demo_account). Written for every agreement, including
+    single payments -- see app/tools.py's _persist_agreement, which also
+    closes the account via apply_settlement for n=1, so this always sets
+    'PAYMENT_PLAN_ACTIVE' here and lets that second call overwrite it to
+    'SETTLED' when applicable, rather than branching on installment count
+    itself."""
     async with _pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 """
                 INSERT INTO payment_plans
                     (account_id, num_installments, amount_per_installment, total_amount,
-                     start_date, payments_breakdown, discount_counters_issued, date_counters_issued)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                     start_date, payments_breakdown, discount_counters_issued, date_counters_issued,
+                     session_id, tier, payment_dates)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 """,
                 account_id,
                 num_installments,
@@ -111,6 +122,9 @@ async def create_payment_plan(
                 payments_breakdown,
                 discount_counters_issued,
                 date_counters_issued,
+                session_id,
+                tier,
+                payment_dates,
             )
             await conn.execute(
                 "UPDATE accounts SET status = 'PAYMENT_PLAN_ACTIVE' WHERE account_id = $1",
@@ -161,10 +175,10 @@ async def create_voice_session_metrics(
 
 async def create_ai_evaluation_log(
     session_id: str,
-    mini_miranda_passed: bool,
+    mini_miranda_passed: bool | None,
     pii_redacted_correctly: bool,
     hallucination_detected: bool,
-    identity_verified_before_disclosure: bool,
+    identity_verified_before_disclosure: bool | None,
     prohibited_conduct_detected: bool,
     right_to_cease_honored: bool | None,
     tone_score: int,
@@ -241,7 +255,16 @@ async def get_compliance_summary(account_id: int | None = None) -> dict:
         """
         SELECT
             COUNT(*) AS total_calls,
-            AVG(CASE WHEN ael.mini_miranda_passed THEN 1.0 ELSE 0.0 END) AS mini_miranda_pass_rate,
+            -- mini_miranda_passed is now nullable (F1/F3 -- not applicable
+            -- when disclosure was never due, e.g. a wrong-person call).
+            -- AVG() already ignores NULL rows on its own; the explicit
+            -- `WHEN ... IS NULL THEN NULL` branch just makes that
+            -- intentional, rather than the plain boolean CASE silently
+            -- reading a NULL as false (not-applicable calls must not drag
+            -- the pass rate down).
+            AVG(CASE WHEN ael.mini_miranda_passed IS NULL THEN NULL
+                     WHEN ael.mini_miranda_passed THEN 1.0
+                     ELSE 0.0 END) AS mini_miranda_pass_rate,
             AVG(ael.tone_score) AS avg_tone_score,
             COALESCE(SUM(CASE WHEN ael.hallucination_detected THEN 1 ELSE 0 END), 0) AS hallucination_count,
             COALESCE(SUM(CASE WHEN ael.prohibited_conduct_detected THEN 1 ELSE 0 END), 0) AS prohibited_conduct_count,
@@ -258,7 +281,11 @@ async def get_compliance_summary(account_id: int | None = None) -> dict:
 async def get_calls(account_id: int | None = None) -> list[dict]:
     """Call history: voice_session_metrics left-joined to ai_evaluation_logs
     (the audit runs in the background, so it may not have landed yet -- or
-    may have failed -- for the most recent call)."""
+    may have failed -- for the most recent call) and to payment_plans (a
+    call has at most one agreement -- record_agreement is guarded to fire
+    once per call -- so this join can never fan out a row). Powers the
+    dashboard's Call Report, which needs the agreement's own terms
+    alongside the call's metrics and compliance judgment in one place."""
     rows = await _pool.fetch(
         """
         SELECT
@@ -267,9 +294,15 @@ async def get_calls(account_id: int | None = None) -> list[dict]:
             vsm.transcript_path,
             ael.mini_miranda_passed, ael.pii_redacted_correctly, ael.hallucination_detected,
             ael.identity_verified_before_disclosure, ael.prohibited_conduct_detected,
-            ael.right_to_cease_honored, ael.tone_score, ael.judge_reasoning, ael.judge_cost_usd
+            ael.right_to_cease_honored, ael.tone_score, ael.judge_reasoning, ael.judge_cost_usd,
+            pp.tier AS plan_tier, pp.total_amount AS plan_total_amount,
+            pp.num_installments AS plan_num_installments,
+            pp.payments_breakdown AS plan_payments_breakdown, pp.payment_dates AS plan_payment_dates,
+            pp.discount_counters_issued AS plan_discount_counters_issued,
+            pp.date_counters_issued AS plan_date_counters_issued
         FROM voice_session_metrics vsm
         LEFT JOIN ai_evaluation_logs ael ON ael.session_id = vsm.session_id
+        LEFT JOIN payment_plans pp ON pp.session_id = vsm.session_id
         WHERE $1::int IS NULL OR vsm.account_id = $1
         ORDER BY vsm.created_at DESC
         """,

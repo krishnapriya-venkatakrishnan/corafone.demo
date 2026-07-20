@@ -56,16 +56,19 @@ async def test_create_payment_plan_writes_plan_and_updates_status(patched_db_poo
     here can't catch a Decimal/float regression, which is exactly the bug
     class app/tools.py's type hints were fixed for."""
     breakdown = "100.00,100.00,100.00,100.00,100.00"
+    dates = "2026-07-10,2026-08-10,2026-09-10,2026-10-10,2026-11-10"
     await db.create_payment_plan(
         42, 5, Decimal("100.00"), Decimal("500.00"), date(2026, 7, 10), breakdown,
-        discount_counters_issued=1, date_counters_issued=0,
+        discount_counters_issued=1, date_counters_issued=0, session_id="sess_abc123",
+        tier="payment_plan", payment_dates=dates,
     )
 
     assert mock_db_conn.execute.await_count == 2
     plan_call, status_call = mock_db_conn.execute.call_args_list
     assert "INSERT INTO payment_plans" in plan_call.args[0]
     assert plan_call.args[1:] == (
-        42, 5, Decimal("100.00"), Decimal("500.00"), date(2026, 7, 10), breakdown, 1, 0,
+        42, 5, Decimal("100.00"), Decimal("500.00"), date(2026, 7, 10), breakdown, 1, 0, "sess_abc123",
+        "payment_plan", dates,
     )
     assert "PAYMENT_PLAN_ACTIVE" in status_call.args[0]
     assert status_call.args[1] == 42
@@ -163,6 +166,11 @@ async def test_get_compliance_summary(patched_db_pool):
     # validation and 500s the endpoint.
     assert "COALESCE(SUM(CASE WHEN ael.hallucination_detected" in query
     assert "COALESCE(SUM(CASE WHEN ael.prohibited_conduct_detected" in query
+    # F1/F3: mini_miranda_passed is now nullable ("not applicable" on a
+    # wrong-person call) -- a plain boolean CASE would read NULL as false
+    # and drag the pass rate down; the explicit IS NULL branch keeps those
+    # rows excluded from the average instead.
+    assert "WHEN ael.mini_miranda_passed IS NULL THEN NULL" in query
 
 
 async def test_get_calls_joins_metrics_and_evaluation(patched_db_pool):
@@ -171,6 +179,10 @@ async def test_get_calls_joins_metrics_and_evaluation(patched_db_pool):
     assert calls == [{"session_id": "sess_1", "disposition_code": "SETTLED"}]
     query = patched_db_pool.fetch.call_args.args[0]
     assert "LEFT JOIN ai_evaluation_logs" in query
+    # H: also joined to payment_plans by session_id, so the Call Report can
+    # show the agreement's own terms (tier, schedule) alongside the call.
+    assert "LEFT JOIN payment_plans pp ON pp.session_id = vsm.session_id" in query
+    assert "pp.tier AS plan_tier" in query
     assert "ORDER BY vsm.created_at DESC" in query
 
 

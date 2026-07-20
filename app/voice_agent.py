@@ -7,13 +7,14 @@ uploads it to Supabase Storage on teardown -- see app/storage.py."""
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from deepgram import AsyncDeepgramClient
 from deepgram.core.events import EventType
 from deepgram.types import ThinkSettingsV1, SpeakSettingsV1
 from deepgram.agent.v1.types import (
+    AgentV1InjectAgentMessage,
     AgentV1Settings,
     AgentV1SettingsAgentContext,
     AgentV1SettingsAgentContextListen,
@@ -30,6 +31,60 @@ logger = logging.getLogger("corafone")
 
 deepgram_client = AsyncDeepgramClient(api_key=config.DEEPGRAM_API_KEY)
 
+# linear16 = 16-bit PCM, 2 bytes/sample -- must match config.AUDIO_ENCODING
+# and frontend/app.js's playback pipeline (see config.py's own comment on
+# AUDIO_ENCODING). Used only to estimate how long the browser is still
+# playing queued audio after Deepgram finishes sending it -- see
+# _estimated_playback_remaining_seconds below.
+_BYTES_PER_SAMPLE = 2
+_AUDIO_BYTES_PER_SECOND = config.AUDIO_SAMPLE_RATE * config.AUDIO_CHANNELS * _BYTES_PER_SAMPLE
+
+
+def _estimated_playback_remaining_seconds(
+    bytes_sent: int, segment_started_at: datetime, now: datetime
+) -> float:
+    """How much longer the browser is likely still playing the current
+    utterance's queued audio, estimated from bytes sent and the fixed
+    output audio format -- never negative (the caller skips sleeping
+    entirely at 0). Pure function, no asyncio, so the estimate itself is
+    directly unit-testable without real sleeping.
+
+    This is an estimate, not a guarantee: it assumes audio was sent to
+    the browser at roughly the rate it plays back (true for Deepgram's
+    streaming TTS in practice) and that network delivery didn't stall.
+    It trades perfect accuracy for being right far more often than the
+    previous behavior (clearing agent_speaking the instant Deepgram
+    finished SENDING bytes, which could be many seconds before the
+    browser finished playing them -- confirmed live with an 8-second gap
+    on a single-utterance disclosure)."""
+    estimated_duration = bytes_sent / _AUDIO_BYTES_PER_SECOND
+    playback_end = segment_started_at + timedelta(seconds=estimated_duration)
+    return max(0.0, (playback_end - now).total_seconds())
+
+
+def _schedule_agent_speaking_clear(session: CallSession) -> None:
+    """Replaces the immediate `agent_speaking = False` on AgentAudioDone --
+    keeps it True until the estimated playback end instead. Cancels
+    whatever clear was already pending (a new utterance starting before
+    the previous one's estimated playback finished must not let a stale
+    timer clear agent_speaking out from under it)."""
+    if session.agent_speaking_clear_task is not None:
+        session.agent_speaking_clear_task.cancel()
+
+    remaining = _estimated_playback_remaining_seconds(
+        session.audio_bytes_sent, session.audio_segment_started_at or datetime.now(), datetime.now()
+    )
+
+    async def _clear_after_delay() -> None:
+        try:
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            session.agent_speaking = False
+        except asyncio.CancelledError:
+            pass
+
+    session.agent_speaking_clear_task = asyncio.create_task(_clear_after_delay())
+
 
 async def send_control_packet(session: CallSession, packet_type: str) -> None:
     """Sends a small JSON control frame to the browser (see app.js's
@@ -38,6 +93,27 @@ async def send_control_packet(session: CallSession, packet_type: str) -> None:
         await session.websocket.send_text(json.dumps({"type": packet_type}))
     except Exception:
         logger.exception("Failed to send '%s' control packet to client.", packet_type)
+
+
+async def _redeliver_mini_miranda(session: CallSession) -> None:
+    """What a real collector does after being cut off mid-disclosure: says
+    it again, in full. Injected as the agent's own next utterance --
+    `AgentV1InjectAgentMessage` with the fixed disclosure text verbatim,
+    not a prompt instruction asking the model to reconstruct it itself.
+    Rule 1 already requires this exact string spoken with no LLM
+    round-trip for the same reason the greeting is: FDCPA requires the
+    disclosure be made, and there's no compliance value in a model
+    deciding how to paraphrase it. `behavior="queue"` appends after
+    whatever's already in flight (the customer's interrupting turn)
+    rather than risking an `InjectionRefused` from `default`, which only
+    fires while neither side is mid-turn -- always false immediately
+    after a barge-in."""
+    try:
+        await session.agent_connection.send_inject_agent_message(
+            AgentV1InjectAgentMessage(message=config.MINI_MIRANDA_DISCLOSURE, behavior="queue")
+        )
+    except Exception:
+        logger.exception("Failed to re-inject the Mini-Miranda disclosure after an interruption.")
 
 
 def on_agent_message(message: Any, session: CallSession) -> None:
@@ -51,6 +127,7 @@ def on_agent_message(message: Any, session: CallSession) -> None:
     None for it). Everything else is a JSON event discriminated by `.type`.
     """
     if isinstance(message, bytes):
+        session.audio_bytes_sent += len(message)
         asyncio.create_task(session.websocket.send_bytes(message))
         return
 
@@ -66,12 +143,60 @@ def on_agent_message(message: Any, session: CallSession) -> None:
 
     message_type = getattr(message, "type", None)
 
+    if message_type == "AgentStartedSpeaking":
+        session.agent_speaking = True
+        session.audio_bytes_sent = 0
+        session.audio_segment_started_at = datetime.now()
+        if session.agent_speaking_clear_task is not None:
+            session.agent_speaking_clear_task.cancel()
+            session.agent_speaking_clear_task = None
+        return
+
+    if message_type == "AgentAudioDone":
+        # Do NOT clear agent_speaking here -- this fires when Deepgram
+        # finishes SENDING audio, not when the browser finishes playing
+        # it. See _schedule_agent_speaking_clear.
+        _schedule_agent_speaking_clear(session)
+        return
+
     if message_type == "UserStartedSpeaking":
-        # Flux already confirmed this is real speech -- stop playback now.
-        logger.info("[Barge-in] Customer started speaking -- clearing playback.")
-        append_call_log(session, "Barge-in", "Customer started speaking -- clearing playback.")
-        session.barge_in_count += 1
+        # Flux already confirmed this is real speech -- stop playback now,
+        # unconditionally: clearing an already-empty buffer is harmless,
+        # and a real interruption must never be missed. Only the COUNT and
+        # the curated transcript line are conditioned on whether the agent
+        # was actually mid-speech -- Deepgram doesn't tell us that itself
+        # (see CallSession.agent_speaking); without this, every
+        # UserStartedSpeaking counted as a "barge-in" regardless, inflating
+        # the metric whenever the agent had already finished talking.
         asyncio.create_task(send_control_packet(session, "clear_audio_buffer"))
+        if session.agent_speaking:
+            logger.info("[Barge-in] Customer interrupted Cora mid-speech -- clearing playback.")
+            append_call_log(session, "Barge-in", "Customer interrupted Cora mid-speech -- clearing playback.")
+            # The most recently transcribed assistant line may not have
+            # been heard in full -- Deepgram still sends the complete
+            # ConversationText regardless of how much audio actually
+            # played, so without this marker the compliance judge could
+            # score a disclosure as delivered that the consumer never
+            # heard past the first couple of words.
+            append_call_log(session, "Barge-in", "Cora's prior turn may have been cut off before finishing.")
+            session.barge_in_count += 1
+            session.agent_speaking = False
+            if session.agent_speaking_clear_task is not None:
+                session.agent_speaking_clear_task.cancel()
+                session.agent_speaking_clear_task = None
+            if session.last_assistant_turn_was_mini_miranda:
+                # FDCPA requires the disclosure be MADE -- a truncated one
+                # wasn't, however far it got. mini_miranda_interrupted is
+                # sticky for the rest of the call (see CallSession) so
+                # app/audit.py can force mini_miranda_passed to False
+                # regardless of what the LLM judge reads from the
+                # transcript text alone. Re-deliver it now, the way a real
+                # collector would -- see _redeliver_mini_miranda.
+                session.mini_miranda_interrupted = True
+                logger.info("[Barge-in] Mini-Miranda disclosure was interrupted -- re-delivering.")
+                asyncio.create_task(_redeliver_mini_miranda(session))
+        else:
+            logger.info("Customer started speaking while Cora was not -- not counted as a barge-in.")
         return
 
     if message_type == "FunctionCallRequest":
@@ -86,6 +211,15 @@ def on_agent_message(message: Any, session: CallSession) -> None:
             # NegotiationState's docstring and app/tools.py's validation
             # cache, which this invalidates.
             session.turn_id += 1
+        elif message.role == "assistant":
+            # Tracks only the CURRENT turn -- read by a genuine barge-in
+            # (UserStartedSpeaking above) to tell whether the disclosure
+            # specifically was what got cut off, not just some turn.
+            # Reliable as an exact-content check because rule 1 requires
+            # this string spoken verbatim, with no LLM paraphrasing.
+            session.last_assistant_turn_was_mini_miranda = (
+                message.content == config.MINI_MIRANDA_DISCLOSURE
+            )
         return
 
     if message_type in ("Error", "Warning"):
@@ -95,8 +229,10 @@ def on_agent_message(message: Any, session: CallSession) -> None:
         append_call_log(session, message_type, str(description))
         return
 
-    # Welcome, SettingsApplied, AgentThinking, AgentStartedSpeaking,
-    # AgentAudioDone, etc. -- console-only, not curated into the transcript.
+    # Welcome, SettingsApplied, AgentThinking, etc. -- console-only, not
+    # curated into the transcript. (AgentStartedSpeaking/AgentAudioDone are
+    # handled above, for barge-in tracking only -- they don't get a
+    # transcript line either.)
     logger.info("Voice Agent event: %s", message_type)
 
 
@@ -142,7 +278,7 @@ async def initialize_agent_connection(session: CallSession) -> None:
                     provider={"type": "open_ai", "model": config.OPENAI_MODEL},
                     prompt=config.build_system_prompt(session.customer_name, session.account_balance),
                     functions=[
-                        config.VALIDATE_CONSUMER_PROPOSAL_FUNCTION_SCHEMA,
+                        config.NEGOTIATE_FUNCTION_SCHEMA,
                         config.RECORD_AGREEMENT_FUNCTION_SCHEMA,
                     ],
                 ),

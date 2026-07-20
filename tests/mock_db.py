@@ -8,13 +8,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 class FakeWebSocket:
-    """Records every JSON/text frame sent, instead of hitting a real socket."""
+    """Records every JSON/text/binary frame sent, instead of hitting a real socket."""
 
     def __init__(self):
         self.sent_text: list[str] = []
+        self.sent_bytes: list[bytes] = []
 
     async def send_text(self, data: str) -> None:
         self.sent_text.append(data)
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.sent_bytes.append(data)
 
     def sent_packets(self) -> list[dict]:
         return [json.loads(t) for t in self.sent_text]

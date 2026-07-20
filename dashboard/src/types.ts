@@ -42,6 +42,15 @@ export interface CallRecord {
   tone_score: number | null;
   judge_reasoning: string | null;
   judge_cost_usd: number | null;
+  // The agreement's own terms, if this call reached one -- all null
+  // together when no agreement was recorded this call.
+  plan_tier: string | null;
+  plan_total_amount: number | null;
+  plan_num_installments: number | null;
+  plan_payments_breakdown: string | null;
+  plan_payment_dates: string | null;
+  plan_discount_counters_issued: number | null;
+  plan_date_counters_issued: number | null;
 }
 
 export interface PaymentPlanRecord {
@@ -83,6 +92,13 @@ export interface ScenarioResult {
   scenario: string;
   expected_outcome: string;
   passed: boolean;
+  // True when the scenario never actually ran to a verdict (an OpenAI API
+  // failure -- rate limit, timeout, network error -- not a compliance
+  // failure). `passed` is always false alongside this and must not be
+  // trusted on its own; check `crashed` first and render distinctly --
+  // an infrastructure crash is not a failed scenario.
+  crashed: boolean;
+  error: string | null;
   reasoning: string;
   hard_failures: string[];
   transcript: string[];
@@ -108,6 +124,9 @@ export interface ValidateRequest {
   cadence: Cadence;
   first_payment_date: string; // YYYY-MM-DD
   discount_already_countered: boolean;
+  // Explicit per-payment split. When present it's authoritative: the
+  // backend derives number_of_payments from its length.
+  payments?: number[];
 }
 
 export interface ValidateOffer {
@@ -123,4 +142,6 @@ export interface ValidateResponse {
   reason: string;
   offer: ValidateOffer | null;
   violations: string[];
+  // Machine-readable, never spoken by the live agent -- diagnostic only.
+  agent_note: string | null;
 }

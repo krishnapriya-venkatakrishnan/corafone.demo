@@ -22,7 +22,14 @@ async def upload_call_log(path: str, content: str) -> None:
     headers = {
         "Authorization": f"Bearer {config.SUPABASE_SERVICE_ROLE_KEY}",
         "apikey": config.SUPABASE_SERVICE_ROLE_KEY,
-        "Content-Type": "text/plain",
+        # Explicit charset -- Supabase Storage serves a bare "text/plain"
+        # back with no charset, and browsers/HTTP clients default an
+        # unspecified text/* to ISO-8859-1, which mangles any non-ASCII
+        # character (e.g. a curly apostrophe becomes "I\xe2\x80\x99m" ->
+        # "Iâ€™m") on download. Uploading with the charset stated doesn't
+        # by itself fix files already in the bucket -- see
+        # download_call_log's explicit UTF-8 decode below, which does.
+        "Content-Type": "text/plain; charset=utf-8",
         "x-upsert": "true",
     }
     async with httpx.AsyncClient() as client:
@@ -41,4 +48,10 @@ async def download_call_log(path: str) -> str:
     async with httpx.AsyncClient() as client:
         response = await client.get(url, headers=headers)
         response.raise_for_status()
-        return response.text
+        # Explicit decode, not `response.text` -- httpx falls back to
+        # ISO-8859-1 for a `text/plain` response with no charset (which is
+        # what every transcript already in the bucket has, upload fix
+        # above notwithstanding), silently mangling non-ASCII bytes rather
+        # than raising. This repairs transcripts already stored, not just
+        # ones uploaded after the fix.
+        return response.content.decode("utf-8")
