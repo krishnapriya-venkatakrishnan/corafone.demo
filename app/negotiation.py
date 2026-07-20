@@ -131,10 +131,12 @@ class Verdict:
     accepted_offer: Offer | None
     counter_offer: Offer | None
     violations: list[str]  # machine-readable codes, for logs only -- never spoken
-    # Set only when `payment_below_floor` is among `violations` on this
-    # verdict -- see the module docstring's "Surface the floor contextually".
-    # None on every other verdict, deliberately: standing in context on
-    # every response would let the model construct legal offers itself.
+    # Set only when the floor was actually breached by something the
+    # consumer said -- either `payment_below_floor` is among `violations`
+    # on this verdict (a live proposal's own payments), or (request_next_
+    # offer only) a stated `customer_capacity` fell below it. None on every
+    # other verdict, deliberately: standing in context on every response
+    # would let the model construct legal offers itself.
     minimum_payment: Decimal | None = None
     # Machine-readable guidance for the AGENT, never the customer -- the
     # second audience `reason` used to serve badly. Restricted to two
@@ -948,10 +950,16 @@ def _counter_reason(offer: Offer, minimum_payment: Decimal | None = None) -> str
     return reason
 
 
-def _next_offer_reason(offer: Offer) -> str:
+def _next_offer_reason(offer: Offer, minimum_payment: Decimal | None = None) -> str:
     # Deliberately NOT _counter_reason's "I can't approve that" framing --
     # there is no consumer proposal being refused here, just an offer being
-    # volunteered (see request_next_offer).
+    # volunteered (see request_next_offer). minimum_payment, when given,
+    # leads instead of trailing like _counter_reason's -- there's no illegal
+    # proposal here for it to be a caveat on, just a stated capacity that
+    # couldn't be honored, so the constraint IS the reason being led with,
+    # not an addendum to one.
+    if minimum_payment is not None:
+        return f"The smallest payment I can accept is {_speak_amount(minimum_payment)} -- I can offer {_describe_offer(offer)}."
     return f"I can offer {_describe_offer(offer)}."
 
 
@@ -1194,10 +1202,27 @@ def request_next_offer(
     `_select_counter`, `state.unreachable_offer_made`) exactly like
     validate_proposal's own counter-offer paths, so the same candidate is
     never volunteered twice.
+
+    A stated `customer_capacity` below the floor sets `minimum_payment` on
+    the returned Verdict and states it in `reason` -- exactly like
+    validate_proposal already does when a live proposal's own payments
+    breach the floor (see `Verdict.minimum_payment`). Selection itself is
+    unaffected: nothing below the floor is ever a candidate to begin with,
+    so `_select_counter` still lands on the closest legal thing (its own
+    step-7 fallback, since nothing fits a below-floor capacity). Without
+    this, that fallback offer arrives with no explanation of why it's more
+    than what the consumer just said they could pay -- the single most
+    likely thing an uncooperative tester says first, and previously the
+    one case where the agent had to explain a real constraint with nothing
+    in the verdict to explain it from.
     """
     balance = _quantize(balance)
+    minimum_payment = None
     if customer_capacity is not None:
         state.capacity = _quantize(customer_capacity)
+        floor = _floor(balance)
+        if state.capacity < floor:
+            minimum_payment = floor
     # No probe copy needed -- _select_counter excludes the opening anchor
     # unconditionally now (see its own docstring), so calling it directly
     # against the real state already can't re-select that candidate, and
@@ -1214,10 +1239,11 @@ def request_next_offer(
     state.offered.add(_offer_key(offer))
     return Verdict(
         decision="COUNTER",
-        reason=_next_offer_reason(offer),
+        reason=_next_offer_reason(offer, minimum_payment),
         accepted_offer=None,
         counter_offer=offer,
         violations=[],
+        minimum_payment=minimum_payment,
         # None, not a "nothing's wrong" note: agent_note means "change what
         # you're doing," and this is the routine path -- a note here would
         # just teach the agent to skim the field, including on the call

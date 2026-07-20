@@ -1322,6 +1322,44 @@ def test_request_next_offer_with_customer_capacity_sets_capacity_and_returns_a_p
     assert state.capacity == Decimal("200.00")
 
 
+def test_request_next_offer_capacity_below_floor_states_the_minimum():
+    """$200 is below the $250 floor -- the fallback offer above is more
+    than the consumer just said they could pay, and this is the single
+    most likely thing an uncooperative tester says first. The verdict must
+    explain the constraint, not just hand back a bigger number with no
+    context, exactly like validate_proposal already does for a live
+    proposal's own below-floor payments."""
+    state = _fresh_state()
+    verdict = neg.request_next_offer(BALANCE, CALL_DATE, state, customer_capacity=Decimal("200"))
+
+    assert verdict.minimum_payment == Decimal("250.00")
+    assert verdict.reason == (
+        "The smallest payment I can accept is $250 -- I can offer four biweekly payments "
+        "of about $250, starting July 18th."
+    )
+
+
+def test_request_next_offer_capacity_at_or_above_floor_states_no_minimum():
+    """The floor is only worth naming when it was actually the reason the
+    consumer's own figure couldn't be honored -- a capacity that already
+    clears it carries no such constraint to explain."""
+    state = _fresh_state()
+    verdict = neg.request_next_offer(BALANCE, CALL_DATE, state, customer_capacity=Decimal("250"))
+
+    assert verdict.minimum_payment is None
+    assert "smallest payment" not in verdict.reason
+
+
+def test_request_next_offer_no_capacity_states_no_minimum():
+    """No stated capacity at all -- nothing to compare against the floor,
+    so minimum_payment stays unset exactly as before this fix."""
+    state = _fresh_state()
+    verdict = neg.request_next_offer(BALANCE, CALL_DATE, state)
+
+    assert verdict.minimum_payment is None
+    assert "smallest payment" not in verdict.reason
+
+
 def test_request_next_offer_customer_capacity_none_leaves_capacity_untouched():
     """Explicit None (the default) is identical to omitting the argument --
     see test_request_next_offer_does_not_touch_capacity_or_gate above."""

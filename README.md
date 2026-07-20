@@ -1,218 +1,142 @@
-# Corafone Voice Gateway
+# Corafone — voice collections agent
 
-**Live demo:** [corafone-demo.vercel.app](https://corafone-demo.vercel.app/)
+A voice agent that negotiates repayment on a delinquent account, where **every number it says is decided by deterministic code, not by the model.**
 
-An AI voice agent that makes outbound debt-collection calls — holds a real spoken conversation, offers a settlement or a payment plan, and grades its own compliance after every call. Built on FastAPI, Deepgram's Voice Agent API, and OpenAI, with a Supabase backend and a TypeScript dashboard for oversight.
+**Talk to the agent:** [corafone-demo.vercel.app](https://corafone-demo.vercel.app/) — talk to the agent, read call reports, inspect the validator
+**Direct call link:** [corafone-demo.vercel.app/call/](https://corafone-demo.vercel.app/call/)
 
-## Features
+---
 
-- **Live voice conversation** — real-time mic-in/speech-out over a WebSocket, full barge-in support (interrupt the agent mid-sentence and it stops instantly).
-- **Agentic actions, not just talk** — the agent can settle the balance in full or set up a 2-6 month installment plan, each backed by a real, idempotency-guarded database write. It has no callback-scheduling tool: a request to be called back later is handled entirely in conversation (acknowledged, redirected back to settlement/payment plan), never as a booked action.
-- **Deterministic compliance gates** — a stop-contact request permanently flags the account for manual review (`requires_manual_review`), set in code, not left to an LLM's judgment (see Known limitations for what currently reads that flag).
-- **Post-call compliance audit** — every transcript is graded by an LLM judge for the Mini-Miranda disclosure, identity verification, hallucinated terms, prohibited conduct, and tone.
-- **Scenario test suite** — fourteen adversarial conversation scenarios (happy path, vague agreement, wrong person, stop-contact request, discount holds, capacity limits, etc.), run against the real prompt and tools with a mocked DB, graded by structural checks and an LLM judge. Runnable from the dashboard or CI.
-- **Dashboard** — account status, compliance rollup, call history with full transcripts, active payment plans/callbacks, and a live scenario-test runner.
+## The one-sentence version
 
-## Architecture
+The model runs the conversation. A separate Python module decides what is acceptable. The model can only speak figures a tool gave it — it cannot invent, approve, or refuse an amount on its own.
 
-```mermaid
-flowchart LR
-    Browser -- "mic audio (WS)" --> Gateway["FastAPI Gateway<br/>/ws/stream"]
-    Gateway --> Relay["Voice Session Relay"]
-    Relay <--> Deepgram["Deepgram Voice Agent<br/>STT + OpenAI think + TTS"]
-    Deepgram -- "speech audio" --> Browser
-    Relay -- "on hangup" --> Storage[("Supabase Storage<br/>transcript")]
-    Storage --> CJudge["Compliance Judge<br/>gpt-4o"]
-    Relay -.shares.-> Core
+---
 
-    Persona["Consumer Persona<br/>gpt-4o-mini (test-only)"] <--> Core
-    Core -- "mocked DB" --> SJudge["Scenario Judge<br/>gpt-4o"]
-
-    Core["Cora Core<br/>config.py + app/tools.py"] --> DB[("Supabase Postgres")]
-    CJudge --> DB
-```
-
-**Four separate AI decision-makers**, each with a different job and a different amount of autonomy:
-
-| Component | File | Model | Nature |
-|---|---|---|---|
-| Cora | `app/voice_agent.py` + `config.py` | gpt-4o-mini | Multi-turn conversational agent, live on the call |
-| Compliance Judge | `app/audit.py` | gpt-4o | Single-shot: grades the finished call transcript |
-| Scenario Judge | `tests/scenarios/judge.py` | gpt-4o | Single-shot: grades a test scenario's transcript against its expected outcome |
-| Consumer Persona | `tests/scenarios/harness.py` | gpt-4o-mini | Multi-turn, test-only: simulates the customer in scenario tests |
-
-**Two lanes share one "Cora Core"** — the system prompt, tool schemas, and tool-handling logic (`config.py` + `app/tools.py`) are a single shared component invoked two different ways:
-- **Live calls**: Browser → FastAPI Gateway (`/ws/stream`) → Voice Session Relay → Deepgram Voice Agent (which owns STT, the OpenAI "think" call, and TTS) → back to the browser. The relay captures the transcript turn-by-turn as it happens and, on hangup, uploads it to Supabase Storage and hands it to the Compliance Judge.
-- **Scenario tests**: a FastAPI endpoint drives a full text conversation directly over OpenAI's chat completions API — no Deepgram, no audio — between the Consumer Persona and Cora Core, against a mocked DB, then hands the transcript to the Scenario Judge.
-
-**The compliance feedback loop**: whenever the Compliance Judge detects a stop-contact request on a call, it sets `accounts.requires_manual_review = TRUE` — a past compliance event permanently and deterministically flags the account, cleared only by a human.
-
-## Data model
-
-```mermaid
-erDiagram
-    accounts ||--o{ communication_logs : "has"
-    accounts ||--o{ voice_session_metrics : "has"
-    accounts ||--o{ payment_plans : "has"
-    accounts ||--o{ scheduled_callbacks : "has"
-    voice_session_metrics ||--o| ai_evaluation_logs : "graded by"
-
-    accounts {
-        int account_id PK
-        string customer_name
-        string phone_number UK
-        numeric current_balance
-        string status "ACTIVE / SETTLED / PAYMENT_PLAN_ACTIVE / DO_NOT_CALL"
-        bool requires_manual_review "hard block, cleared only by a human"
-    }
-    communication_logs {
-        int log_id PK
-        int account_id FK
-        string channel "VOICE / SMS / EMAIL"
-        string direction "INBOUND / OUTBOUND"
-        text content "one line per tool action taken"
-        timestamp timestamp
-    }
-    voice_session_metrics {
-        string session_id PK
-        int account_id FK
-        timestamp created_at
-        int total_duration_seconds
-        int avg_latency_ms
-        int barge_in_count
-        string disposition_code "SETTLED / PAYMENT_PLAN_ACTIVE / CALLBACK_SCHEDULED / NO_ACTION"
-        int error_count
-        string transcript_path "Supabase Storage key"
-    }
-    ai_evaluation_logs {
-        int eval_id PK
-        string session_id FK
-        bool mini_miranda_passed
-        bool pii_redacted_correctly
-        bool hallucination_detected
-        bool identity_verified_before_disclosure
-        bool prohibited_conduct_detected
-        bool right_to_cease_honored "null = never asked to stop"
-        int tone_score "1-5"
-        text judge_reasoning
-        numeric judge_cost_usd
-    }
-    payment_plans {
-        int plan_id PK
-        int account_id FK
-        int num_installments
-        numeric amount_per_installment
-        numeric total_amount
-        date start_date
-        string status
-        timestamp created_at
-    }
-    scheduled_callbacks {
-        int callback_id PK
-        int account_id FK
-        timestamp callback_time
-        string status
-        timestamp created_at
-    }
-```
-
-`scheduled_callbacks` is read-only from the live agent's perspective — Cora has no tool to write to it (see Features), so any rows come from seed data or a prior human agent. The dashboard's "Active Commitments" panel and the `/commitments` endpoint still read it.
-
-The full-conversation transcript itself lives outside Postgres, as a text file in Supabase Storage (`communications/{account_id}/{call_timestamp}/log.txt`) — `voice_session_metrics.transcript_path` points to it. `communication_logs` holds only one structured line per tool action (settlement charged, payment plan created, etc.), not the full dialogue.
-
-## Tech stack
-
-- **Backend**: Python, FastAPI, WebSockets, `asyncpg`
-- **Voice**: Deepgram Voice Agent API (STT + turn-taking/barge-in + TTS), `flux-general-en` STT model, `aura-2-harmonia-en` TTS voice
-- **LLM**: OpenAI (`gpt-4o-mini` for the live conversation, `gpt-4o` for every judge/picker role)
-- **Data**: Supabase (Postgres + Storage)
-- **Dashboard**: Vite, React 19, TypeScript, Tailwind CSS
-- **Testing**: pytest + pytest-asyncio (Layer 1, fully mocked), a custom LLM-scenario harness (Layer 3)
-
-## Setup
-
-**Backend**
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install fastapi uvicorn websockets asyncpg httpx openai pydantic python-dotenv deepgram-sdk
-```
-
-Create a `.env` in the project root:
-
-```text
-OPENAI_API_KEY=your_openai_api_key
-DATABASE_URL=your_supabase_session_pooler_connection_string
-DEEPGRAM_API_KEY=your_deepgram_key
-SUPABASE_URL=your_supabase_project_base_url
-SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
-```
-
-Start the gateway:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-**Dashboard**
-
-```bash
-cd dashboard
-npm install
-npm run dev   # http://localhost:5173, expects the backend on http://127.0.0.1:8000
-```
-
-**Voice demo client** (standalone, outside the dashboard)
-
-```bash
-cd frontend
-python3 -m http.server 8080
-```
-Open `http://127.0.0.1:8080/index.html` — requires mic permissions, so serve over `http://`, not `file://`.
-
-**Tests**
-
-```bash
-pip install pytest pytest-asyncio
-pytest                              # Layer 1: unit tests, fully mocked, free and instant
-pytest -m scenario                  # Layer 3: LLM scenario suite -- costs real OpenAI tokens
-```
-
-## Project structure
+## How it works
 
 ```
-app/
-  main.py           FastAPI app + /ws/stream WebSocket route (browser-facing)
-  voice_agent.py     Deepgram Voice Agent session, transcript capture, teardown
-  config.py          Cora's system prompt, tool schemas, greeting -- the shared "Cora Core"
-  tools.py           Settlement / payment plan tool handlers, idempotency guards
-  db.py              Supabase Postgres access (asyncpg)
-  storage.py         Supabase Storage access (transcripts)
-  audit.py           Post-call compliance judge
-  dashboard_api.py   Read-only dashboard API + live scenario-test runner
-  session.py         Per-call state (CallSession)
-  database/          Schema, migrations, seed data + seed transcripts
-dashboard/            Vite + React + TypeScript dashboard
-frontend/              Standalone vanilla-JS voice demo client
-tests/
-  test_*.py           Layer 1 unit tests (mocked DB/LLM/Deepgram)
-  scenarios/          Layer 3: LLM-driven conversation scenarios + judge
-.github/workflows/     CI (Layer 1 on every push; Layer 3 manual, workflow_dispatch)
+Consumer speech
+      |
+Deepgram Voice Agent  (speech-to-text, turn-taking, barge-in, text-to-speech)
+      |
+   gpt-4o  — runs the conversation, calls tools, never decides amounts
+      |
+   negotiate()  — deterministic. No LLM, no clock, no database.
+      |            Returns ACCEPT / COUNTER / NO_AGREEMENT
+      |
+record_agreement()  — re-validates, then writes to Postgres
+      |
+gpt-4o post-call audit  — scores the transcript for FDCPA compliance
 ```
 
-## Compliance notes
+The negotiation module (`app/negotiation.py`) is a pure function. Same inputs, same outputs, every time. It has no access to the model, the database, or the current time — the call date is passed in. That is what makes it testable, and what lets the same code back the dashboard's validator playground.
 
-- **Mini-Miranda disclosure** is a fixed, verbatim line stated on the first turn once identity is confirmed — never left to the LLM to paraphrase.
-- **Identity verification precedes any debt disclosure** — if the person on the line isn't confirmed to be the account holder, Cora will not reveal the balance, the debt, or even that this is a collections call.
-- **Stop-contact requests are a hard stop**: honored immediately, mid-conversation, regardless of what else was being discussed — and permanently flag that account for manual review afterward (`requires_manual_review`), independent of what the LLM itself decided in the moment. This flag is set deterministically in code (`app/audit.py`), not left to an LLM to infer from history — see Known limitations for what currently reads it.
-- **No unauthorized terms**: settlement is full-balance-only (no discount authority), and payment plans are capped at 2-6 monthly installments — anything else is flagged by the compliance judge as a hallucination.
-- **Account state changes never trust the LLM's own account_id** — it's resolved server-side from the phone number at call start and never exposed as a tool parameter.
+---
+
+## The negotiation ladder
+
+Account: **$1,000**, 180+ days delinquent. Smallest payment: **$250** (25%).
+
+| | Outcome | Total | Payments | Notes |
+|---|---|---|---|---|
+| 1 | Full payment | $1,000 | 1 | Opening position, always |
+| 2 | Down payment + one | $1,000 | 2 | $750 today, $250 later — the split is fixed by the floor |
+| 3 | Settlement | $800–$1,000 | 1–3 | Gated: only after an explicit discount request |
+| 4 | Payment plan | $1,000 | 2–4 | Weekly, biweekly or monthly, inside 3 months |
+
+**Selection is capacity-scored, not scripted.** The module enumerates every legal arrangement, discards what has been refused, what the consumer cannot afford, and what will not fit the calendar — then picks the one collecting the most money that they can actually pay.
+
+That last point matters. The tiers are not monotonic in value: a settlement collects **less** ($800) than a payment plan ($1,000) while demanding **more** per payment ($266.67 vs $250). Following the list literally would concede $200 to consumers who could afford the full balance. So the module orders by value collected, using the task's tier order to break ties between equal totals.
+
+---
+
+## Compliance
+
+Enforced in code and prompt, audited after every call.
+
+**Identity gate.** No balance, no purpose, no disclosure until the account holder is confirmed. Under FDCPA §1692c(b) a collector may not reveal that a debt exists to a third party — so withholding is the *correct* behaviour on a wrong-number call, and the audit scores it as not-applicable rather than failed.
+
+**Mini-Miranda**, verbatim, immediately after identity is confirmed.
+
+**Stop-contact** honoured immediately, from any point in the call, overriding everything.
+
+**No threats, no false urgency, no invented consequences.** The agent never claims a lawsuit, a deadline, or a credit consequence. It never promises a callback — there is no scheduler, so any such claim would be a promise with nothing behind it.
+
+**Disputes** get one neutral confirmation, then the call is logged and ended. A disputed debt is not negotiated.
+
+Every call is scored by a gpt-4o audit against these criteria, stored in `ai_evaluation_logs` and visible in the dashboard's Call Report.
+
+---
+
+## Assumptions
+
+The brief leaves several things open. Each of these was a deliberate choice.
+
+**Smallest payment = 25% of the original balance ($250)**, not 25% of the negotiated total. The stricter reading; it makes the floor a fixed protection rather than one that shrinks with the discount.
+
+**"Over 3 months max" is read exclusively.** A payment landing exactly on the three-month anniversary is *outside* the window. This affects exactly one arrangement — $250 × 4 monthly, which spans 92 days — so the cheapest monthly plan is $333.34 × 3. Four payments of $250 remain available weekly and biweekly.
+
+**The window is measured in calendar months from the call date to the last payment**, not in days. Four monthly payments span 92 days; a flat 90-day rule would reject the standard monthly plan on a quirk of month lengths.
+
+**First payment defaults to today** when no date is given. A date more than 14 days out is countered once with an earlier one, then accepted if the consumer holds — bounded always by the three-month window. The 14 days is ours, not the task's: on a 180-day delinquent account a distant promise carries real default risk, but refusing a payday-aligned date would produce plans that break on the first instalment.
+
+**A settlement is never offered unprompted.** The discount tier stays locked until the consumer explicitly asks for a reduction and holds after one counter. Once open, the module walks intermediate steps — 5%, 10%, 15%, then 20% — rather than conceding the maximum immediately. "Up to 20% off" means up to, not always.
+
+**A consumer's own legal proposal is accepted exactly as stated.** $600 today and $400 later is accepted as $600/$400, not normalised to the canonical $750/$250. If they propose $900 and it is legal, they get $900, not the $800 ceiling.
+
+---
+
+## Testing
+
+**279 unit tests** covering the module, the tool handlers, persistence, the audit, and the voice-agent event loop.
+
+**Property-based fuzzing** — tens of thousands of randomised proposals per run, asserting four invariants: the module never raises, never returns a counter-offer that fails its own validation, payments always sum exactly to the total, and `NO_AGREEMENT` is the only decision that returns no offer.
+
+**An adversarial scenario harness.** Fifteen personas — hedging, wrong number, stop-contact, lowball, unreachable capacity, discount pressure, garbled dates — driven by an LLM playing an uncooperative consumer against the real prompt and real tools, with an LLM judge scoring each transcript against a written expectation. Structural checks run alongside: every figure the agent speaks must appear in a tool result or the consumer's own words; `record_agreement` may never fire without a matching prior acceptance; escalation phrasing may never appear without a `NO_AGREEMENT` verdict. It runs from pytest (`pytest -m scenario`). It isn't exposed in the dashboard because a full run saturates the API rate limit on this account tier.
+
+The harness found real bugs — including one in its own expectations. One scenario demanded a 25% discount when the cap is 20%; the module refused, the test failed, and the *test* was wrong.
+
+**Live calls**, from browser and phone, against the deployed instance.
+
+---
 
 ## Known limitations
 
-- **No auto-dialer enforces `requires_manual_review`.** The flag is still set deterministically the moment a stop-contact request is detected (`app/audit.py` → `db.set_requires_manual_review`), and the dashboard surfaces it (the "Needs review" badge). But this project only ever places one call at a time — there's no automated call queue left to gate on it. Enforcement (blocking a flagged account from being auto-dialed again) is out of scope for a single-call task; wiring the flag into whatever schedules future outbound calls is the remaining piece.
-- FDCPA's call-frequency-limit rule (contact attempts per debtor per week) isn't enforced — it needs cross-call aggregation over `communication_logs`, not a per-call judge.
-- The live conversation's OpenAI token cost isn't measurable — Deepgram intermediates those calls, so only judge/picker LLM costs (`judge_cost_usd`) are tracked precisely.
-- The Scenario Judge only sees transcript text, not which tools actually fired — tool-call-count claims are covered by separate structural checks, not the judge itself.
-- No real telephony — calls happen over a browser WebSocket (mic + speaker), not a PSTN/SIP trunk.
+**Model adherence.** The agent can occasionally speak an offer without calling the validator first. Nothing invalid can be *recorded* — `record_agreement` re-validates server-side and rejects — but an unauthorised figure can be spoken. This was materially worse on gpt-4o-mini; moving to gpt-4o appears to reduce it — a live harness pass found zero ungrounded figures in the scenarios that completed — but gpt-4o's own rate limit (see Testing) capped that pass at 2 of 15 scenarios before crashing, so this is an observation, not a measured rate. The cost of the switch either way is higher latency and a much tighter rate limit.
+
+**Interruption detection under-reports.** Deepgram signals end-of-transmission, not end-of-playback, so a consumer interrupting during buffered audio may not be counted as a barge-in.
+
+**Splits on intermediate settlements are not proposed.** If the consumer asks for $950 across three payments it is validated and accepted; the module simply does not offer that shape unprompted.
+
+**Monitoring and follow-up are out of scope.** Agreements are recorded with their full schedules and flagged where the first payment is deferred, but missed-payment detection and follow-up contact belong to dialler and payment systems this project does not include.
+
+**Demo affordance:** each call resets the account so it can be tested repeatedly. Prior agreements are marked superseded rather than deleted, so history accumulates.
+
+---
+
+## Repo
+
+```
+app/negotiation.py   the deterministic module — start here
+app/tools.py         tool handlers, turn memoisation, gate-shopping guard
+app/config.py        system prompt and tool schemas
+app/voice_agent.py   Deepgram event loop, barge-in, transcript, teardown
+app/audit.py         post-call FDCPA audit
+app/database/        schema
+dashboard/           React dashboard — call UI, reports, validator
+tests/               unit, fuzz, and scenario suites (harness runs via `pytest -m scenario`, not the dashboard)
+```
+
+## Running locally
+
+```bash
+pip install -r requirements.txt
+# set DEEPGRAM_API_KEY, OPENAI_API_KEY, DATABASE_URL,
+#     SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, TZ=America/New_York
+uvicorn app.main:app --reload
+python -m pytest tests/ -q       # Layer 1: unit + fuzz, free and instant
+pytest -m scenario               # Layer 3: adversarial harness, costs real OpenAI tokens (see Testing)
+```
+
+The dashboard's **Playground** tab exercises `negotiation.py` directly — no model, no database, no call required. It is the fastest way to see the rules for yourself.

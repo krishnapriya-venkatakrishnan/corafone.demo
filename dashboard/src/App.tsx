@@ -2,14 +2,12 @@ import { useState } from "react";
 import Sidebar, { type Section } from "./components/Sidebar";
 import CallFrame from "./components/CallFrame";
 import CallReportPanel from "./components/CallReportPanel";
-import ScenarioRunner from "./components/ScenarioRunner";
 import DecisionsPanel from "./components/DecisionsPanel";
 import PlaygroundPanel from "./components/PlaygroundPanel";
 
 const TITLES: Record<Section, string> = {
   voice: "Voice Agent",
   callReport: "Call Report",
-  harness: "Harness",
   decisions: "Decisions",
   playground: "Playground",
 };
@@ -36,7 +34,6 @@ export default function App() {
           >
             <h2 className="text-xl font-semibold text-black mb-6">{TITLES[active]}</h2>
             {active === "callReport" && <CallReportPanel />}
-            {active === "harness" && <ScenarioRunner />}
             {active === "decisions" && <DecisionsPanel />}
             {active === "playground" && <PlaygroundPanel />}
           </div>

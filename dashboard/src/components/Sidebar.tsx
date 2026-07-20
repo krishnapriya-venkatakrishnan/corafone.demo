@@ -1,9 +1,14 @@
-export type Section = "voice" | "callReport" | "harness" | "decisions" | "playground";
+// "harness" (ScenarioRunner.tsx) is deliberately not a Section -- gpt-4o's
+// 30k TPM ceiling means a live run against the deployed instance surfaces
+// almost entirely as rate-limit crashes, not real signal (see README's
+// Testing section). The component and its backend endpoints
+// (/api/dashboard/scenarios/*) are untouched -- the harness itself still
+// runs, just via `pytest -m scenario` locally, not from this nav.
+export type Section = "voice" | "callReport" | "decisions" | "playground";
 
 const ICONS: Record<Section, string> = {
   voice: `<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>`,
   callReport: `<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>`,
-  harness: `<path d="M9 2v6l-6 11a2 2 0 0 0 1.8 3h14.4a2 2 0 0 0 1.8-3L15 8V2"/><path d="M9 2h6"/><path d="M8.5 13h7"/>`,
   decisions: `<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>`,
   playground: `<path d="M4 4h16v12H4z"/><path d="M4 9h16"/><path d="M9 4v5"/><circle cx="14" cy="13.5" r="1.5"/>`,
 };
@@ -11,7 +16,6 @@ const ICONS: Record<Section, string> = {
 const LABELS: Record<Section, string> = {
   voice: "Voice Agent",
   callReport: "Call Report",
-  harness: "Harness",
   decisions: "Decisions",
   playground: "Playground",
 };

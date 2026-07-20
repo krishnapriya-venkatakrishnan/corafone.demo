@@ -1,208 +1,207 @@
-function Code({ children }: { children: string }) {
-  return <code className="bg-neutral-100 rounded px-1 py-0.5 text-[0.9em]">{children}</code>;
-}
+const OFFERS = [
+  { tier: "Pay in full", amount: "$1,000 today", note: "Where every call starts." },
+  {
+    tier: "A down payment plus one",
+    amount: "$750 today, $250 in two weeks",
+    note: "The split is not a choice: the second payment is pushed to the minimum so the first is as large as possible.",
+  },
+  {
+    tier: "A settlement",
+    amount: "$800 to $1,000, up to three payments",
+    note: "Only if the consumer asks for a discount, and only after being told no once.",
+  },
+  {
+    tier: "A payment plan",
+    amount: "$1,000 across two to four payments",
+    note: "Weekly, biweekly or monthly, all inside three months.",
+  },
+];
 
-const LADDER = [
-  { tier: "1. Full payment", total: "$1,000", max: "1", example: "$1,000 today" },
-  { tier: "2. Downpayment + one", total: "$1,000", max: "2", example: "$750 today, $250 in two weeks" },
-  { tier: "3. Settlement", total: "≥ $800 (max 20% off)", max: "3", example: "$266.67 / $266.67 / $266.66" },
-  { tier: "4. Payment plan", total: "$1,000", max: "4", example: "$250 × 4 weekly or biweekly; $333.34 × 3 monthly" },
+const NEVER = [
+  "Threaten. Invent a deadline or a consequence.",
+  "Promise a callback: there is nothing behind such a promise, so it is never made.",
+  "Say a number the validator did not give it.",
+  "Discuss the debt with anyone who is not the account holder. Not the balance, not the reason for the call, not even that it is a collections call. If the wrong person answers, the agent asks when the account holder is reachable and ends politely.",
+  "Keep going after someone asks it to stop.",
 ];
 
 export default function DecisionsPanel() {
   return (
     <div className="space-y-12">
-      <section className="max-w-[85ch] space-y-6">
-        <h2 className="text-lg font-semibold text-black">Three decisions that shaped this build</h2>
-
-        <div className="space-y-3">
-          <h3 className="text-base font-semibold text-black">1. Negotiation authority lives outside the agent.</h3>
-          <p className="text-sm text-neutral-700 leading-relaxed">
-            In collections, the parts that must be correct cannot be left to a probabilistic model.{" "}
-            <Code>app/negotiation.py</Code> is pure, deterministic Python - no model call, no database, no
-            I/O, and no reads of the system clock - and it is the sole authority on which terms are
-            acceptable. The agent's role is narrow by construction: elicit the consumer's proposal, call
-            the validator, and relay the verdict. It never judges an amount, and it never composes a
-            counter-offer; it speaks the counter the validator returned.
-          </p>
-          <p className="text-sm text-neutral-700 leading-relaxed">
-            The write path re-validates. Agreements are recorded through a single <Code>record_agreement</Code>{" "}
-            tool, guarded by one session-level lock, which re-runs the validator server-side before writing
-            and refuses anything that does not pass. Even if the model hallucinates an approval, nothing
-            invalid reaches the database.
-          </p>
-        </div>
-
-        <div className="space-y-3">
-          <h3 className="text-base font-semibold text-black">2. Compliance is enforced structurally, not by prompt.</h3>
-          <p className="text-sm text-neutral-700 leading-relaxed">
-            The prompt asks the model to behave; the code makes misbehaviour impossible. Identity is
-            resolved server-side from the phone number and is never a parameter the model can set. The
-            Mini-Miranda disclosure is a fixed verbatim string. The discount ceiling, the payment floor,
-            the payment-count cap and the three-month window are constants the validator enforces - so
-            the agent cannot offer unauthorised terms even when it tries.
-          </p>
-          <p className="text-sm text-neutral-700 leading-relaxed">
-            The task states that persuasion relying on threats, false urgency, or invented consequences
-            fails regardless of how well it converts. That is enforced in the prompt and then checked
-            after the fact: every call is graded by a stronger model against the specific failure modes,
-            and the result is stored alongside the call.
-          </p>
-        </div>
-
-        <div className="space-y-3">
-          <h3 className="text-base font-semibold text-black">3. The agent is tested adversarially, against the real prompt.</h3>
-          <p className="text-sm text-neutral-700 leading-relaxed">
-            The system prompt, tool schemas and tool-handling logic are a single shared core, invoked two
-            ways: live over Deepgram with audio, and headless as a text conversation with no Deepgram and
-            a mocked database. The scenario suite therefore exercises the <em>production</em> prompt and
-            tools, not a copy - a customer persona role-plays hostile scenarios against the real agent,
-            and each transcript is graded two ways: an LLM compliance judge, plus structural assertions
-            on which tools actually fired and how often.
-          </p>
-        </div>
+      <section className="max-w-[85ch] space-y-4">
+        <h2 className="text-lg font-semibold text-black">The core idea</h2>
+        <p className="text-base text-black leading-relaxed">
+          <strong>The agent talks. The code decides.</strong>
+        </p>
+        <p className="text-sm text-neutral-700 leading-relaxed">
+          The voice you hear runs the conversation: it listens, responds, and keeps things natural. But
+          it has no authority over money. Every amount, every date, every yes or no comes from a separate
+          piece of code that the model cannot argue with.
+        </p>
+        <p className="text-sm text-neutral-700 leading-relaxed">
+          Ask the agent for a discount and it does not decide. It asks the validator, and repeats the
+          answer.
+        </p>
+        <p className="text-sm text-neutral-700 leading-relaxed">
+          That separation is the whole design. It means the rules hold no matter what the model does,
+          what the consumer says, or how the conversation goes.
+        </p>
       </section>
 
       <section className="space-y-4">
-        <h2 className="text-lg font-semibold text-black">The negotiation ladder</h2>
-        <p className="text-sm text-neutral-700 max-w-[85ch]">Balance: $1,000, 180+ days delinquent.</p>
+        <h2 className="text-lg font-semibold text-black">What the agent can offer</h2>
+        <p className="text-sm text-neutral-700 max-w-[85ch]">The account is $1,000, 180 days overdue. No single payment can be below $250.</p>
 
         <div className="w-full overflow-x-auto rounded-xl border border-neutral-200 max-w-4xl">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-neutral-500 bg-neutral-50">
-                <th className="py-3 px-6 font-medium">Tier</th>
-                <th className="py-3 px-6 font-medium">Total</th>
-                <th className="py-3 px-6 font-medium">Max payments</th>
-                <th className="py-3 px-6 font-medium">Example</th>
+                <th className="py-3 px-6 font-medium">Offer</th>
+                <th className="py-3 px-6 font-medium">Terms</th>
+                <th className="py-3 px-6 font-medium">Notes</th>
               </tr>
             </thead>
             <tbody>
-              {LADDER.map((row, i) => (
+              {OFFERS.map((row, i) => (
                 <tr key={row.tier} className={i > 0 ? "border-t border-neutral-200" : ""}>
-                  <td className="py-3.5 px-6 text-black">{row.tier}</td>
-                  <td className="py-3.5 px-6 text-neutral-700 tabular-nums">{row.total}</td>
-                  <td className="py-3.5 px-6 text-neutral-700 tabular-nums">{row.max}</td>
-                  <td className="py-3.5 px-6 text-neutral-500">{row.example}</td>
+                  <td className="py-3.5 px-6 text-black align-top whitespace-nowrap">{row.tier}</td>
+                  <td className="py-3.5 px-6 text-neutral-700 align-top whitespace-nowrap">{row.amount}</td>
+                  <td className="py-3.5 px-6 text-neutral-500 align-top">{row.note}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      </section>
 
-        <p className="text-sm text-neutral-700 leading-relaxed max-w-[85ch]">
-          The agent anchors at full payment and steps down only as the consumer resists. It never leads
-          with a discount.
+      <section className="max-w-[85ch] space-y-4">
+        <h2 className="text-lg font-semibold text-black">How it picks</h2>
+        <p className="text-sm text-neutral-700 leading-relaxed">
+          Not by working down a list. The code builds every legal arrangement, then removes:
+        </p>
+        <ul className="text-sm text-neutral-700 space-y-1.5 list-disc list-inside leading-relaxed">
+          <li>anything already offered and turned down</li>
+          <li>anything the consumer cannot afford, based on what they said they can manage</li>
+          <li>anything that will not fit inside three months</li>
+          <li>settlements, unless a discount was genuinely requested</li>
+        </ul>
+        <p className="text-sm text-neutral-700 leading-relaxed">
+          From what is left, it takes the one that <strong className="text-black">collects the most money the consumer can actually pay.</strong>
+        </p>
+        <p className="text-sm text-neutral-700 leading-relaxed">
+          That last part is deliberate. A settlement collects less ($800) but asks for <em>more</em> per
+          payment ($266.67) than the cheapest plan ($250). So for someone short on cash, the plan is both
+          better for them and better for us. Ranking strictly by the list would have handed out discounts
+          to people who never needed one.
         </p>
       </section>
 
       <section className="max-w-[85ch] space-y-6">
-        <h2 className="text-lg font-semibold text-black">Assumptions</h2>
+        <h2 className="text-lg font-semibold text-black">Three things that took the most thought</h2>
 
-        <div className="space-y-3">
+        <div className="space-y-2">
+          <h3 className="text-base font-semibold text-black">Discounts are paced, not switched on</h3>
           <p className="text-sm text-neutral-700 leading-relaxed">
-            <strong className="text-black">The 25% floor is measured against the original balance.</strong>{" "}
-            The task states that the smallest payment can never be less than 25%, without naming the
-            base. This is ambiguous only on the settlement tier - every other outcome is full-balance, so
-            the two readings give the same figure. On $1,000 settled at 20% off to $800 over three
-            payments, $300 / $300 / $200 is valid if the floor is 25% of the settled total ($200) and
-            invalid if it is 25% of the original balance ($250). The stricter reading was chosen: it
-            cannot grant terms beyond what the task clearly authorises.
+            The first time someone asks for a reduction, the answer is no, with a real alternative
+            attached. Only if they hold does the discount tier open. Then it steps down gradually: 5%,
+            then 10%, then 15%, then 20%, rather than jumping to the maximum.
           </p>
           <p className="text-sm text-neutral-700 leading-relaxed">
-            The counter-argument is reasonable and worth recording - once a settlement is agreed, $800{" "}
-            <em>is</em> the obligation, and measuring against a balance no longer being collected requires
-            a special case for one tier.
+            "Up to 20% off" means <em>up to</em>. Conceding the full amount on the first ask gives away
+            money nobody asked for.
+          </p>
+          <p className="text-sm text-neutral-700 leading-relaxed">
+            The same pacing applies to dates. Ask to start a month out and you are offered something
+            sooner, once. Hold, and it is accepted, as long as everything still lands inside three
+            months.
           </p>
         </div>
 
-        <p className="text-sm text-neutral-700 leading-relaxed">
-          <strong className="text-black">The maximum number of payments is four, and the task never says so.</strong>{" "}
-          It falls out of the floor: at a $250 minimum on $1,000, no arrangement can exceed four payments
-          regardless of cadence. Cadence controls the spacing of payments, not how many are possible. On
-          the settlement tier the two constraints coincide - at $800 with a $250 floor, at most three
-          payments fit, which is exactly that tier's stated cap.
-        </p>
+        <div className="space-y-2">
+          <h3 className="text-base font-semibold text-black">The consumer's own offer is kept exactly</h3>
+          <p className="text-sm text-neutral-700 leading-relaxed">
+            Propose $600 today and $400 later, and that is what gets recorded, not $500 and $500. The
+            system checks <em>every individual payment</em> against the $250 minimum, not just the total.
+          </p>
+          <p className="text-sm text-neutral-700 leading-relaxed">
+            That distinction matters. $1,000 split evenly across two payments is $500 each and perfectly
+            fine. The same $1,000 split $900 and $100 is not, and only a per-payment check catches it.
+          </p>
+          <p className="text-sm text-neutral-700 leading-relaxed">
+            Try both in the <strong className="text-black">Validator</strong> tab.
+          </p>
+        </div>
 
-        <p className="text-sm text-neutral-700 leading-relaxed">
-          <strong className="text-black">"Over 3 months" is read as an exclusive boundary, measured from the last payment.</strong>{" "}
-          A payment landing exactly on the three-calendar-month anniversary of the call is outside the
-          window, not on its edge. Anchoring on the last payment rather than the first closes a loophole:
-          measuring from the first would let a consumer defer the start by two months and then take three
-          monthly instalments, stretching an already 180-day delinquent account across five.
-        </p>
-        <p className="text-sm text-neutral-700 leading-relaxed">
-          The exclusive reading costs exactly one arrangement: four monthly payments beginning today span
-          92 days, landing the last payment precisely on that anniversary - now illegal. The floor still
-          caps every arrangement at four payments, so four still fit; just not on a monthly cadence -
-          weekly (28 days) and biweekly (42 days) both clear the window comfortably. A consumer paying
-          monthly is offered three payments of $333.34 instead of four of $250.
-        </p>
+        <div className="space-y-2">
+          <h3 className="text-base font-semibold text-black">"Three months" is read strictly</h3>
+          <p className="text-sm text-neutral-700 leading-relaxed">
+            A payment landing exactly on the three-month anniversary counts as outside the window.
+          </p>
+          <p className="text-sm text-neutral-700 leading-relaxed">
+            It changes one thing: four monthly payments of $250 span 92 days, so that arrangement is not
+            allowed. The cheapest monthly plan is three payments of $333.34. Four payments of $250 are
+            still available weekly or biweekly.
+          </p>
+          <p className="text-sm text-neutral-700 leading-relaxed">
+            The stricter reading was chosen deliberately: "three months max" is a maximum.
+          </p>
+        </div>
+      </section>
 
-        <p className="text-sm text-neutral-700 leading-relaxed">
-          <strong className="text-black">The concession gate counters once, then accepts.</strong> A
-          consumer opening with $900 over two payments is proposing a legal 10% settlement, but an
-          opening offer is rarely a maximum; accepting immediately forfeits the full balance one further
-          ask might have secured. The opposing risk is equally real - pushing back on a 180-day
-          delinquent consumer can end the call, turning $900 into nothing, and the task asks for the
-          highest-value agreement they will <em>actually honour</em>. So the system counters at most once
-          per discount request, then accepts. This cap is deliberate: an agent that never concedes fails
-          the "actually honour" test more badly than one that concedes slightly early.
-        </p>
+      <section className="max-w-[85ch] space-y-3">
+        <h2 className="text-lg font-semibold text-black">What the agent will never do</h2>
+        <ul className="text-sm text-neutral-700 space-y-1.5 list-disc list-inside leading-relaxed">
+          {NEVER.map((item, i) => (
+            <li key={i}>{item}</li>
+          ))}
+        </ul>
       </section>
 
       <section className="max-w-[85ch] space-y-4">
-        <h2 className="text-lg font-semibold text-black">What was tested</h2>
+        <h2 className="text-lg font-semibold text-black">How this was tested</h2>
         <p className="text-sm text-neutral-700 leading-relaxed">
-          The validator has 42 unit tests covering every tier boundary, the floor, the discount ceiling,
-          calendar-month edges either side of the limit, rounding, and degenerate input. It was
-          additionally fuzzed across roughly 74,000 generated cases - varying balance, payment count,
-          cadence, dates and negotiation state - asserting that it never raises, never returns a
-          counter-offer that fails its own validation, and that payments always sum exactly to the total.
-          That fuzzing found three real defects, including one where a rounding remainder concentrated on
-          the final payment could push it a cent below the floor with no repair able to reach it.
+          <strong className="text-black">The rules themselves:</strong> 279 automated tests, plus tens of
+          thousands of randomised proposals thrown at the validator every run, checking it never crashes,
+          never offers something that breaks its own rules, and never produces payments that do not add
+          up.
         </p>
         <p className="text-sm text-neutral-700 leading-relaxed">
-          The scenario suite runs fourteen adversarial conversations against the live prompt and tools,
-          including a consumer who hedges without committing, someone who is not the account holder, a
-          request to stop contact, a deflection to "call me back later," and ladder-specific cases like
-          holding out on a discount and refusing every offer without ever naming a figure. Each is graded
-          by an LLM judge and by structural assertions on tool calls.
+          <strong className="text-black">The conversation:</strong> fourteen scripted difficult consumers,
+          someone who hedges without committing, the wrong person answering, someone asking not to be
+          called again, someone who will only pay a fraction, someone pushing hard for a discount, someone
+          giving vague dates. Each is played by a language model against the real agent, and a second
+          model reads the transcript and judges whether the agent held the line.
+        </p>
+        <p className="text-sm text-neutral-700 leading-relaxed">
+          Alongside that, automatic checks: did the agent say a number no tool gave it? Did it record an
+          agreement nobody agreed to? Did it end the call when the rules said it still had options?
+        </p>
+        <p className="text-sm text-neutral-700 leading-relaxed">
+          <strong className="text-black">Real calls</strong>, from a browser and from a phone.
+        </p>
+        <p className="text-sm text-neutral-700 leading-relaxed">
+          The test suite found genuine bugs, including one in itself. A scenario expected the agent to
+          accept a 25% discount when the cap is 20%. The validator refused, the test failed, and the{" "}
+          <em>test</em> was wrong.
         </p>
       </section>
 
-      <section className="max-w-[85ch] space-y-4">
-        <h2 className="text-lg font-semibold text-black">Scope and known limitations</h2>
-        <p className="text-sm text-neutral-700 leading-relaxed">
-          The agent has no callback-scheduling capability. A callback is not one of the acceptable
-          outcomes, and removing the tool denies the agent an escape hatch from the negotiation; the
-          model is told explicitly that it cannot book one, so it cannot promise a call it is unable to
-          make.
-        </p>
-        <p className="text-sm text-neutral-700 leading-relaxed">
-          FDCPA call-frequency limits (no more than seven contacts in seven days) are not enforced. That
-          rule is inherently cross-call and belongs in whatever schedules outbound calls, not in a
-          per-call judge.
-        </p>
-        <p className="text-sm text-neutral-700 leading-relaxed">
-          A stop-contact request sets a manual-review flag deterministically the moment it is detected.
-          With no auto-dialer in this project, there is nothing left to gate on that flag - enforcement
-          belongs to the dialer, which is out of scope for a single-call task.
-        </p>
-        <p className="text-sm text-neutral-700 leading-relaxed">
-          The demo account resets to $1,000 and ACTIVE before every call, so evaluators can call
-          repeatedly without a prior settlement carrying over. This is a demo affordance, and it also
-          clears the manual-review flag.
-        </p>
-        <p className="text-sm text-neutral-700 leading-relaxed">
-          The compliance judge sees only the transcript, not which tools actually fired - tool-related
-          guarantees are covered by the structural checks in the scenario suite instead.
-        </p>
-        <p className="text-sm text-neutral-700 leading-relaxed">
-          Deepgram's Voice Agent API owns speech-to-text, turn detection, barge-in and text-to-speech.
-          This project owns the collections logic, the negotiation validator, the compliance layer and
-          the evaluation harness.
-        </p>
+      <section className="max-w-[85ch] space-y-3">
+        <h2 className="text-lg font-semibold text-black">Try it yourself</h2>
+        <ul className="text-sm text-neutral-700 space-y-1.5 leading-relaxed">
+          <li>
+            <strong className="text-black">Validator:</strong> type in any offer and see the verdict,
+            with the reason. No call required.
+          </li>
+          <li>
+            <strong className="text-black">Call Report:</strong> every call, its transcript, what was
+            agreed, and the compliance audit.
+          </li>
+          <li>
+            <strong className="text-black">Test Suite:</strong> the difficult-consumer scenarios and how
+            the agent handled each.
+          </li>
+        </ul>
       </section>
     </div>
   );

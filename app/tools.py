@@ -81,10 +81,11 @@ def _offer_to_dict(offer: negotiation.Offer) -> dict:
 def _verdict_to_tool_result(verdict: negotiation.Verdict) -> dict:
     """Never includes `violations` -- those are log-only, see
     negotiation.Verdict's docstring; the model must never see or speak them.
-    `minimum_payment` is included only when set (payment_below_floor fired
-    on this verdict) -- see Verdict's docstring for why it isn't always
-    present. `agent_note` is included only when set (never on ACCEPT or
-    NO_AGREEMENT) -- machine-readable, for the agent to read and act on,
+    `minimum_payment` is included only when set (the floor was actually
+    breached by something the consumer said -- either a live proposal's own
+    payments, or a stated customer_capacity) -- see Verdict's docstring for
+    why it isn't always present. `agent_note` is included only when set
+    (never on ACCEPT or NO_AGREEMENT) -- machine-readable, for the agent to read and act on,
     never speak (see the prompt rule in app/config.py). `offer_summary` is
     included whenever there's an offer at all (ACCEPT or COUNTER) --
     pre-formatted for the agent to confirm from directly, see Verdict's
